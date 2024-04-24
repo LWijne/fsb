@@ -1,4 +1,4 @@
-############################# RANDOM FOREST WITH FAIR HPO #############################
+############################# LOGISTIC REGRESSION #############################
 
 #!/usr/bin/env python
 # coding: utf-8
@@ -16,8 +16,11 @@ from sklearn.preprocessing import RobustScaler, OneHotEncoder
 from sklearn.impute import SimpleImputer, MissingIndicator
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import roc_auc_score
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_auc_score, f1_score
+
+# Fairlearn
+from fairlearn.metrics import demographic_parity_ratio
 
 # HyperOpt
 from hyperopt import hp, fmin, tpe, Trials, STATUS_OK
@@ -30,7 +33,6 @@ pd.options.mode.chained_assignment = None
 
 from warnings import filterwarnings
 filterwarnings('ignore')
-
 
 ############################# Data pre-processing and feature selection functions #############################
 
@@ -171,20 +173,19 @@ def data_prep(df, K, predictors, target_col):
     data_prep_dict["y"] = targets
     data_prep_dict['folds'] = splitter
     
-    return data_prep_dict  
-
+    return data_prep_dict 
 
 ############################# Parameters #############################
 
-K = 10 # K-fold CV
+K = 3 # K-fold CV
 
-hyperopt_evals = 200 # Max number of evaluations for HPO
+hyperopt_evals = 10 # Max number of evaluations for HPO
 
 target_col = "beached" # Target
 
 sensitive_col = "country_current_flag" # Sensitive attribute
 
-random_state = 42 # Seed to be used for reproducibility 
+random_state = 42 # Seed to be used for reproducibility
 
 standard_threshold = 0.5 # Classification threshold
 
@@ -339,6 +340,7 @@ def cross_val_score_custom(model, X, y, s, cv=10):
     auc_fair = np.nanmean(auc_fair_list, axis=0)
     return auc_perf, auc_fair
 
+
 def best_model(trials):
     '''
     Retrieve the best model.
@@ -347,7 +349,7 @@ def best_model(trials):
                     trials (Trials object): Trials object.
 
             Returns:
-                    trained_model (RandomForestClassifier object): The best model.
+                    trained_model (LogisticRegression object): The best model.
     '''
     valid_trial_list = [trial for trial in trials
                             if STATUS_OK == trial['result']['status']]
@@ -356,6 +358,7 @@ def best_model(trials):
     best_trial_obj = valid_trial_list[index_having_minumum_loss]
     trained_model = best_trial_obj['result']['trained_model']
     return trained_model
+
 
 def objective(params):
     '''
@@ -367,16 +370,16 @@ def objective(params):
             Returns:
                     (dict): The loss, status and trained model.
     '''
-    model = RandomForestClassifier(
-      n_estimators=params['n_estimators'],
-      criterion=params['criterion'],
-      max_depth=params['max_depth'],
-      min_samples_split=params['min_samples_split'],
-      min_samples_leaf=params['min_samples_leaf'],
-      max_features=params['max_features'],
-      bootstrap=params['bootstrap'],
+    model = LogisticRegression(
+      penalty=params['penalty'],
+      tol=params['tol'],
+      C=params['C'],
+      fit_intercept=params['fit_intercept'],
+      class_weight=params['class_weight'],
       random_state=random_state,
-      class_weight=params['class_weight']
+      solver='saga',
+      max_iter=params['max_iter'],
+      l1_ratio=params['l1_ratio']
     )
     pipeline = Pipeline([('column_transformer', ct), ('classifier', model)])
     roc_auc_y, roc_auc_s = cross_val_score_custom(
@@ -390,9 +393,10 @@ def objective(params):
 
     return {'loss': -goal, 'status': STATUS_OK, 'trained_model': model}
 
+
 ############################# Training the classifier, predictions and outcomes #############################
 
-def random_forest_(th):
+def logistic_regression_(th):
     '''
     Computes the average and std of AUC and SDP over K folds.
 
@@ -408,7 +412,7 @@ def random_forest_(th):
 
     mean_roc_auc = []
     mean_strong_dp = []
-    
+
     y = sloopschepen["y"]
     s = sloopschepen["X"][sensitive_col]
     splitter_y = y.astype(str) + s.astype(str)
@@ -421,7 +425,7 @@ def random_forest_(th):
         global s_train
         global theta
         theta = th
-
+        
         # Splitting and reparing the data, targets and sensitive attributes
         X_train_df = sloopschepen["X"][sloopschepen["X"].index.isin(trainset)]
         y_train_df = sloopschepen["y"][sloopschepen["y"].index.isin(trainset)]
@@ -431,16 +435,15 @@ def random_forest_(th):
         s_test = X_test_df[sensitive_col]
         X_train_df = X_train_df.drop(columns=[sensitive_col])
         X_test_df = X_test_df.drop(columns=[sensitive_col])
-        
+
         params = {
-            'n_estimators': hp.uniformint('n_estimators', 10, 1000, q=1.0),
-            'criterion': hp.choice('criterion', ['gini', 'entropy']),
-            'max_depth': hp.choice('max_depth', [None, hp.uniformint('max_depth_int', 2, 200, q=1.0)]),
-            'min_samples_split': hp.uniformint('min_samples_split', 2, 10, q=1.0),
-            'min_samples_leaf': hp.uniformint('min_samples_leaf', 1, 10, q=1.0),
-            'max_features': hp.choice('max_features', ['sqrt', 'log2', None]),
-            'bootstrap': hp.choice('bootstrap', [True, False]),
-            'class_weight': hp.choice('class_weight', [None, 'balanced', 'balanced_subsample'])
+            'penalty': hp.choice('penalty', ["l1", "l2", "elasticnet", "none"]),
+            'tol': hp.uniform('tol', 0.00001, 0.001),
+            'C': hp.uniform('C', 0.01, 10.0),
+            'fit_intercept': hp.choice('fit_intercept', [True, False]),
+            'class_weight': hp.choice('class_weight', [None, 'balanced']),
+            'max_iter': hp.uniformint('max_iter', 10, 1000, q=1.0),
+            'l1_ratio': hp.uniform('l1_ratio', 0.0, 1.0)
         }
 
         trials = Trials()
@@ -454,8 +457,8 @@ def random_forest_(th):
         )
 
         # Initializing and fitting the classifier
-        clf = best_model(trials)
-        pipeline = Pipeline([('column_transformer', ct), ('classifier', clf)])
+        cv = best_model(trials)
+        pipeline = Pipeline([('column_transformer', ct), ('classifier', cv)])
         pipeline.fit(X_train_df, y_train_df)
 
         # Final predictions
@@ -464,8 +467,9 @@ def random_forest_(th):
 
         mean_roc_auc.append(roc_auc_score(y_true, y_pred_probs))
         mean_strong_dp.append(strong_demographic_parity_score(s_test, y_pred_probs))
-
+    
     return np.average(mean_roc_auc), np.average(mean_strong_dp), np.std(mean_roc_auc), np.std(mean_strong_dp)
+
 
 auc_list = []
 sdp_list = []
@@ -475,7 +479,7 @@ std_sdp_list = []
 theta_list = np.arange(0.0, 1.1, 0.1)
 
 for th in theta_list:
-    roc_auc, strong_dp, std_auc, std_sdp = random_forest_(th)
+    roc_auc, strong_dp, std_auc, std_sdp = logistic_regression_(th)
     auc_list.append(roc_auc)
     sdp_list.append(strong_dp)
     std_auc_list.append(std_auc)
@@ -485,14 +489,14 @@ for th in theta_list:
 ############################# Plot: AUC and SDP trade-off #############################
 
 plt.scatter(sdp_list, auc_list)
-plt.title("AUC and SDP scores obtained by optimizing for different theta values when applying RF")
+plt.title("AUC and SDP scores obtained by optimizing for different theta values when applying LR")
 plt.xlabel("Strong demographic parity")
 plt.ylabel("AUC")
 
 for i, txt in enumerate(theta_list):
     plt.annotate(round(txt,1), (sdp_list[i], auc_list[i]))
 
-plt.savefig('rf_fair_hpo.pdf', bbox_inches='tight')
+plt.savefig('lr_fair_hpo.pdf', bbox_inches='tight')
 
 print("auc_flr =", auc_list)
 print("sdp_flr =", sdp_list)
@@ -503,6 +507,7 @@ print("std_sdp_flr =", std_sdp_list)
 # plt.fill_between(theta_list, [x - y for x, y in zip(auc_list, std_auc_list)], [x + y for x, y in zip(auc_list, std_auc_list)], alpha=0.2)
 # plt.plot(theta_list, sdp_list, label="SDP")
 # plt.fill_between(theta_list, [x - y for x, y in zip(sdp_list, std_sdp_list)], [x + y for x, y in zip(sdp_list, std_sdp_list)], alpha=0.2)
-# plt.title("AUC and SDP scores for different theta values when applying RF")
+# plt.title("AUC and SDP scores for different theta values when applying LR")
 # plt.xlabel("Theta")
 # plt.legend()
+
