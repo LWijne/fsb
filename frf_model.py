@@ -1,4 +1,4 @@
-############################# NEURAL NETWORK #############################
+############################# FAIR RANDOM FOREST #############################
 
 #!/usr/bin/env python
 # coding: utf-8
@@ -7,7 +7,6 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import tensorflow as tf
 import sys
 import copy
 
@@ -17,13 +16,10 @@ from sklearn.preprocessing import RobustScaler, OneHotEncoder
 from sklearn.impute import SimpleImputer, MissingIndicator
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
-from sklearn.metrics import roc_auc_score, f1_score
+from sklearn.metrics import roc_auc_score
 
-# Fairlearn
-from fairlearn.metrics import demographic_parity_ratio
-
-# AIF360
-from aif360.sklearn.inprocessing import AdversarialDebiasing
+# Fair Random Forest
+from fair_trees import FairRandomForestClassifier
 
 # HyperOpt
 from hyperopt import hp, fmin, tpe, Trials, STATUS_OK
@@ -36,9 +32,6 @@ pd.options.mode.chained_assignment = None
 
 from warnings import filterwarnings
 filterwarnings('ignore')
-
-# Disable eager execution for Adversarial Debiasing
-tf.compat.v1.disable_eager_execution()
 
 ############################# Data pre-processing and feature selection functions #############################
 
@@ -198,8 +191,6 @@ standard_threshold = 0.5 # Classification threshold
 
 thresholds = np.arange(0.05, 1.0, 0.05) # Thresholds for experiments
 
-theta = 0.0 # Performance (0) - fairness (1)
-
 # Define list of predictors to use
 predictors = [
     "vessel_type",
@@ -293,60 +284,61 @@ def strong_demographic_parity_score(s, y_prob):
 
 ############################# HPO #############################
 
-def cross_val_score_custom(model, X, y, s, cv=10):
+def cross_val_score_custom(model, X, y, cv=10):
     '''
     Evaluate the ROC AUC score by cross-validation.
 
             Parameters:
-                    model (GridSearchReduction object): The model.
+                    model (FairRandomForestClassifier object): The model.
                     X (array-like): The training data.
                     y (array-like): The labels.
-                    s (array-like): The sensitive attribute.
                     cv (int): Number of folds.
 
             Returns:
-                    auc_perf (float): The ROC AUC score of the predictions and the labels.
-                    auc_fair (float): The ROC AUC score of the predictions and the sensitive attribute.
+                    roc_auc (float): The ROC AUC score.
     '''
     
     # Create K-fold cross validation folds
     splitter = StratifiedKFold(n_splits=cv, shuffle=True, random_state=random_state)
     
-    auc_perf_list = []
-    auc_fair_list = []
-
+    auc_list = []
+    
+    s = X[sensitive_col]
     splitter_y = y.astype(str) + s.astype(str)
 
     # Looping over the folds
     for trainset, testset in splitter.split(X,splitter_y):
 
         # Splitting and reparing the data, targets and sensitive attributes
-        X_train_df = X[X.index.isin(trainset)]
-        y_train_df = y[y.index.isin(trainset)]
-        X_test_df = X[X.index.isin(testset)]
-        y_test_df = y[y.index.isin(testset)]
-        s_test = s[s.index.isin(testset)].astype(int)
-        X_train_df = pd.DataFrame(ct.fit_transform(X_train_df))
-        X_test_df = pd.DataFrame(ct.transform(X_test_df))
+        X_train = X[X.index.isin(trainset)]
+        y_train = y[y.index.isin(trainset)]
+        
+        X_test = X[X.index.isin(testset)]
+        y_test = y[y.index.isin(testset)]
+        
+        s_train = pd.DataFrame(X_train[sensitive_col]).values.astype(int)
+        
+        X_train = X_train.drop(columns=[sensitive_col])
+        X_test = X_test.drop(columns=[sensitive_col])
+        
+        X_train = ct.fit_transform(X_train)
+        X_test = ct.transform(X_test)
 
         # Initializing and fitting the classifier
-        cv = model
-        cv.fit(X_train_df, y_train_df)
+        clf = copy.deepcopy(model)
+        clf.fit(X_train, y_train, s_train)
 
         # Final predictions
-        y_pred_probs = cv.predict_proba(X_test_df).T[1]
-        y_true = y_test_df
+        y_pred_probs = clf.predict_proba(X_test).T[1]
+        y_true = y_test
 
-        auc_perf_list.append(roc_auc_score(y_true,y_pred_probs))
-        auc_fair_list.append(0.5 + abs(0.5 - roc_auc_score(s_test, y_pred_probs)))
+        auc_list.append(roc_auc_score(y_true,y_pred_probs))
 
 
     # Final results
-    auc_perf_list = np.array(auc_perf_list)
-    auc_perf = np.nanmean(auc_perf_list, axis=0)
-    auc_fair_list = np.array(auc_fair_list)
-    auc_fair = np.nanmean(auc_fair_list, axis=0)
-    return auc_perf, auc_fair
+    auc_list = np.array(auc_list)
+    roc_auc = np.nanmean(auc_list, axis=0)
+    return roc_auc
 
 def best_model(trials):
     '''
@@ -356,7 +348,7 @@ def best_model(trials):
                     trials (Trials object): Trials object.
 
             Returns:
-                    trained_model (AdversarialDebiasing object): The best model.
+                    trained_model (FairRandomForestClassifier object): The best model.
     '''
     valid_trial_list = [trial for trial in trials
                             if STATUS_OK == trial['result']['status']]
@@ -376,136 +368,144 @@ def objective(params):
             Returns:
                     (dict): The loss, status and trained model.
     '''
-    model = AdversarialDebiasing(
-      prot_attr=None,
-      debias=False,
+    model = FairRandomForestClassifier(
       random_state=random_state,
-      num_epochs=params['num_epochs'],
-      batch_size=params['batch_size'],
-      classifier_num_hidden_units=params['classifier_num_hidden_units']
+      theta=params['theta'],
+      n_bins=params['n_bins'],
+      max_depth=params['max_depth'],
+      bootstrap=params['bootstrap'],
+      n_estimators=params['n_estimators'],
+      min_samples_split=params['min_samples_split'],
+      min_samples_leaf=params['min_samples_leaf'],
+      max_features=params['max_features']
     )
-    roc_auc_y, roc_auc_s = cross_val_score_custom(
+    roc_auc = cross_val_score_custom(
       model,
       X_train_df,
       y_train_df,
-      s_train,
-      cv=K,
+      cv=K
     )
-    goal = (1-theta) * roc_auc_y - theta * roc_auc_s
 
-    return {'loss': -goal, 'status': STATUS_OK, 'trained_model': model}
+    return {'loss': -roc_auc, 'status': STATUS_OK, 'trained_model': model}
 
 
 ############################# Training the classifier, predictions and outcomes #############################
 
-auc_plot_list, f1_plot_list, dpr_plot_list, sdp_plot_list = [], [], [], []
+def fair_random_forest_(th):
+    '''
+    Computes the average and std of AUC and SDP over K folds.
 
-y = sloopschepen["y"]
-s = sloopschepen["X"][sensitive_col]
-splitter_y = y.astype(str) + s.astype(str)
+            Parameters:
+                    th (float): The theta value for FRF.
 
-# Looping over the folds
-for trainset, testset in sloopschepen["folds"].split(sloopschepen["X"],splitter_y):
+            Returns:
+                    roc_auc (float): The average of the ROC AUC list.
+                    strong_dp (float): The average of the strong demographic parity list.
+                    std_auc (float): The standard deviation of the ROC AUC list.
+                    std_sdp (float): The standard deviation of the strong demographic parity list.
+    '''
 
-    # Splitting and reparing the data, targets and sensitive attributes
-    X_train_df = sloopschepen["X"][sloopschepen["X"].index.isin(trainset)]
-    y_train_df = sloopschepen["y"][sloopschepen["y"].index.isin(trainset)]
-    X_test_df = sloopschepen["X"][sloopschepen["X"].index.isin(testset)]
-    y_test_df = sloopschepen["y"][sloopschepen["y"].index.isin(testset)]
-    s_train = X_train_df[sensitive_col]
-    s_test = X_test_df[sensitive_col]
-    X_train_df = X_train_df.drop(columns=[sensitive_col])
-    X_test_df = X_test_df.drop(columns=[sensitive_col])
+    mean_roc_auc = []
+    mean_strong_dp = []
     
-    params = {
-        'num_epochs': hp.uniformint('num_epochs', 5, 500, q=1.0),
-        'batch_size': hp.uniformint('batch_size', 8, 2048, q=1.0),
-        'classifier_num_hidden_units': hp.uniformint('classifier_num_hidden_units', 20, 2000, q=1.0)
-    }
+    y = sloopschepen["y"]
+    s = sloopschepen["X"][sensitive_col]
+    splitter_y = y.astype(str) + s.astype(str)
 
-    trials = Trials()
+    # Looping over the folds
+    for trainset, testset in sloopschepen["folds"].split(sloopschepen["X"],splitter_y):
+        
+        global X_train_df
+        global y_train_df
+        
+        # Splitting and preparing the data, targets and sensitive attributes
+        X_train_df = sloopschepen["X"][sloopschepen["X"].index.isin(trainset)]
+        y_train_df = sloopschepen["y"][sloopschepen["y"].index.isin(trainset)]
+        
+        X_test_df = sloopschepen["X"][sloopschepen["X"].index.isin(testset)]
+        y_test_df = sloopschepen["y"][sloopschepen["y"].index.isin(testset)]
 
-    opt = fmin(
-        fn=objective,
-        space=params,
-        algo=tpe.suggest,
-        max_evals=hyperopt_evals,
-        trials=trials
-    )
+        params = {
+            'theta': hp.choice('theta', [th]),
+            'n_bins': hp.choice('n_bins', [256]),
+            'bootstrap': hp.choice('bootstrap', [True]),
+            'max_depth': hp.uniformint('max_depth', 1, 20, q=1.0),
+            'max_features': hp.uniform("max_features", 0.05, 0.95),
+            'n_estimators': hp.uniformint('n_estimators', 100, 500, q=1.0),
+            'min_samples_leaf': hp.uniformint('min_samples_leaf', 1, 10, q=1.0),
+            'min_samples_split': hp.uniformint('min_samples_split', 2, 20, q=1.0),
+        }
+
+        trials = Trials()
+
+        opt = fmin(
+            fn=objective,
+            space=params,
+            algo=tpe.suggest,
+            max_evals=hyperopt_evals,
+            trials=trials
+        )
+
+        # Initializing and fitting the classifier
+        cv = best_model(trials)
+        
+        s_train = pd.DataFrame(X_train_df[sensitive_col]).values.astype(int)
+        s_test = X_test_df[sensitive_col]
+        
+        X_train_df = X_train_df.drop(columns=[sensitive_col])
+        X_test_df = X_test_df.drop(columns=[sensitive_col])
+        
+        X_train_df = pd.DataFrame(ct.fit_transform(X_train_df))
+        X_test_df = pd.DataFrame(ct.transform(X_test_df))
+        
+        cv.fit(X_train_df, y_train_df, s_train)
+
+        # Final predictions
+        y_pred_probs = cv.predict_proba(X_test_df).T[1]
+        y_true = y_test_df
+
+        mean_roc_auc.append(roc_auc_score(y_true, y_pred_probs))
+        mean_strong_dp.append(strong_demographic_parity_score(s_test, y_pred_probs))
     
-    X_train_df = pd.DataFrame(ct.fit_transform(X_train_df))
-    X_test_df = pd.DataFrame(ct.transform(X_test_df))
+    return np.average(mean_roc_auc), np.average(mean_strong_dp), np.std(mean_roc_auc), np.std(mean_strong_dp)
 
-    # Initializing and fitting the classifier
-    cv = best_model(trials)
-    cv.fit(X_train_df, y_train_df)
+auc_list = []
+sdp_list = []
+std_auc_list = []
+std_sdp_list = []
 
-    # Final predictions
-    y_pred_probs = cv.predict_proba(X_test_df).T[1]
-    y_true = y_test_df
+theta_list = np.arange(0.0, 1.1, 0.1)
 
-    auc_plot, f1_plot, dpr_plot, eor_plot, sdp_plot = [], [], [], [], []
+for th in theta_list:
+    roc_auc, strong_dp, std_auc, std_sdp = fair_random_forest_(th)
+    auc_list.append(roc_auc)
+    sdp_list.append(strong_dp)
+    std_auc_list.append(std_auc)
+    std_sdp_list.append(std_sdp)
+    print(((th*10+1)/11)*100, "% complete")
 
-    # Looping over the thresholds
-    for t in thresholds:
-        y_pred = [1 if pred>=t else 0 for pred in y_pred_probs] # Predictions for t
+############################# Plot: AUC and SDP trade-off #############################
 
-        # Adding all scores for this fold, for this threshold
-        auc_plot.append(roc_auc_score(y_true,y_pred_probs))
-        f1_plot.append(f1_score(y_true,y_pred))
-        dpr_plot.append(demographic_parity_ratio(y_true=y_true, y_pred=y_pred, sensitive_features=s_test))
-        sdp_plot.append(strong_demographic_parity_score(s_test, y_pred_probs))
+plt.scatter(sdp_list, auc_list)
+plt.title("AUC and SDP scores obtained by optimizing for different theta values when applying FRF")
+plt.xlabel("Strong demographic parity")
+plt.ylabel("AUC")
 
-    # Final results for this fold (list for all thresholds)
-    auc_plot_list.append(auc_plot)
-    f1_plot_list.append(f1_plot)
-    dpr_plot_list.append(dpr_plot)
-    sdp_plot_list.append(sdp_plot)
+for i, txt in enumerate(theta_list):
+    plt.annotate(round(txt,1), (sdp_list[i], auc_list[i]))
 
+plt.savefig('frf.pdf', bbox_inches='tight')
 
-# Final results
-auc_plot_list = np.array(auc_plot_list)
-auc_plot = np.nanmean(auc_plot_list, axis=0)
-auc_std = np.nanstd(auc_plot_list, axis=0)
+print("auc_frf =", auc_list)
+print("sdp_frf =", sdp_list)
+print("std_auc_frf =", std_auc_list)
+print("std_sdp_frf =", std_sdp_list)
 
-f1_plot_list = np.array(f1_plot_list)
-f1_plot = np.nanmean(f1_plot_list, axis=0)
-f1_std = np.nanstd(f1_plot_list, axis=0)
-
-dpr_plot_list = np.array(dpr_plot_list)
-dpr_plot = np.nanmean(dpr_plot_list, axis=0)
-dpr_std = np.nanstd(dpr_plot_list, axis=0)
-
-sdp_plot_list = np.array(sdp_plot_list)
-sdp_plot = np.nanmean(sdp_plot_list, axis=0)
-sdp_std = np.nanstd(sdp_plot_list, axis=0)
-rev_sdp_plot = 1-sdp_plot
-
-
-############################# Plot: performance and fairness measures against thresholds #############################
-
-plt.plot(thresholds, auc_plot, label='AUC')
-plt.fill_between(thresholds, auc_plot - auc_std, auc_plot + auc_std, alpha=0.2)
-
-plt.plot(thresholds, f1_plot, label='F1')
-plt.fill_between(thresholds, f1_plot - f1_std, f1_plot + f1_std, alpha=0.2)
-
-plt.plot(thresholds, dpr_plot, label='DPR')
-plt.fill_between(thresholds, dpr_plot - dpr_std, dpr_plot + dpr_std, alpha=0.2)
-
-plt.plot(thresholds, rev_sdp_plot, label='1-SDP')
-plt.fill_between(thresholds, rev_sdp_plot - sdp_std, rev_sdp_plot + sdp_std, alpha=0.2)
-
-plt.title("Performance and fairness measures (with sensitive attribute = 'country_current_flag')\nof Neural Network plotted against thresholds.")
-plt.xlabel("Threshold")
-plt.legend()
-plt.yticks(np.arange(0.0, 1.1, 0.1))
-plt.xticks(np.arange(0.0, 1.1, 0.1));
-
-plt.savefig('nn.pdf', bbox_inches='tight')
-
-print("auc_nn =", [auc_plot[0]])
-print("sdp_nn =", [sdp_plot[0]])
-print("std_auc_nn =", [auc_std[0]])
-print("std_sdp_nn =", [sdp_std[0]])
+# plt.plot(theta_list, auc_list, label="AUC")
+# plt.fill_between(theta_list, [x - y for x, y in zip(auc_list, std_auc_list)], [x + y for x, y in zip(auc_list, std_auc_list)], alpha=0.2)
+# plt.plot(theta_list, sdp_list, label="SDP")
+# plt.fill_between(theta_list, [x - y for x, y in zip(sdp_list, std_sdp_list)], [x + y for x, y in zip(sdp_list, std_sdp_list)], alpha=0.2)
+# plt.title("AUC and SDP scores for different theta values when applying FRF")
+# plt.xlabel("Theta")
+# plt.legend()
 
