@@ -1,4 +1,4 @@
-############################# RANDOM FOREST WITH FAIR HPO #############################
+############################# NEURAL NETWORK #############################
 
 #!/usr/bin/env python
 # coding: utf-8
@@ -9,6 +9,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import sys
 import copy
+import tensorflow as tf
 
 # Sklearn
 from sklearn.model_selection import StratifiedKFold
@@ -16,8 +17,10 @@ from sklearn.preprocessing import RobustScaler, OneHotEncoder
 from sklearn.impute import SimpleImputer, MissingIndicator
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import roc_auc_score
+
+# AIF360
+from aif360.sklearn.inprocessing import AdversarialDebiasing
 
 # HyperOpt
 from hyperopt import hp, fmin, tpe, Trials, STATUS_OK
@@ -31,6 +34,8 @@ pd.options.mode.chained_assignment = None
 from warnings import filterwarnings
 filterwarnings('ignore')
 
+# Disable eager execution for Adversarial Debiasing
+tf.compat.v1.disable_eager_execution()
 
 ############################# Data pre-processing and feature selection functions #############################
 
@@ -318,7 +323,8 @@ def cross_val_score_custom(model, X, y, s, cv=10):
         X_test_df = X[X.index.isin(testset)]
         y_test_df = y[y.index.isin(testset)]
         s_test = s[s.index.isin(testset)].astype(int)
-        
+        X_train_df = pd.DataFrame(ct.fit_transform(X_train_df))
+        X_test_df = pd.DataFrame(ct.transform(X_test_df))
 
         # Initializing and fitting the classifier
         cv = model
@@ -347,7 +353,7 @@ def best_model(trials):
                     trials (Trials object): Trials object.
 
             Returns:
-                    trained_model (RandomForestClassifier object): The best model.
+                    trained_model (AdversarialDebiasing object): The best model.
     '''
     valid_trial_list = [trial for trial in trials
                             if STATUS_OK == trial['result']['status']]
@@ -367,20 +373,16 @@ def objective(params):
             Returns:
                     (dict): The loss, status and trained model.
     '''
-    model = RandomForestClassifier(
-      n_estimators=params['n_estimators'],
-      criterion=params['criterion'],
-      max_depth=params['max_depth'],
-      min_samples_split=params['min_samples_split'],
-      min_samples_leaf=params['min_samples_leaf'],
-      max_features=params['max_features'],
-      bootstrap=params['bootstrap'],
+    model = AdversarialDebiasing(
+      prot_attr=None,
+      debias=False,
       random_state=random_state,
-      class_weight=params['class_weight']
+      num_epochs=params['num_epochs'],
+      batch_size=params['batch_size'],
+      classifier_num_hidden_units=params['classifier_num_hidden_units']
     )
-    pipeline = Pipeline([('column_transformer', ct), ('classifier', model)])
     roc_auc_y, roc_auc_s = cross_val_score_custom(
-      pipeline,
+      model,
       X_train_df,
       y_train_df,
       s_train,
@@ -390,9 +392,10 @@ def objective(params):
 
     return {'loss': -goal, 'status': STATUS_OK, 'trained_model': model}
 
+
 ############################# Training the classifier, predictions and outcomes #############################
 
-def random_forest_(th):
+def neural_network_(th):
     '''
     Computes the average and std of AUC and SDP over K folds.
 
@@ -408,7 +411,7 @@ def random_forest_(th):
 
     mean_roc_auc = []
     mean_strong_dp = []
-    
+
     y = sloopschepen["y"]
     s = sloopschepen["X"][sensitive_col]
     splitter_y = y.astype(str) + s.astype(str)
@@ -421,7 +424,7 @@ def random_forest_(th):
         global s_train
         global theta
         theta = th
-
+        
         # Splitting and reparing the data, targets and sensitive attributes
         X_train_df = sloopschepen["X"][sloopschepen["X"].index.isin(trainset)]
         y_train_df = sloopschepen["y"][sloopschepen["y"].index.isin(trainset)]
@@ -431,16 +434,11 @@ def random_forest_(th):
         s_test = X_test_df[sensitive_col]
         X_train_df = X_train_df.drop(columns=[sensitive_col])
         X_test_df = X_test_df.drop(columns=[sensitive_col])
-        
+
         params = {
-            'n_estimators': hp.uniformint('n_estimators', 10, 1000, q=1.0),
-            'criterion': hp.choice('criterion', ['gini', 'entropy']),
-            'max_depth': hp.choice('max_depth', [None, hp.uniformint('max_depth_int', 2, 200, q=1.0)]),
-            'min_samples_split': hp.uniformint('min_samples_split', 2, 10, q=1.0),
-            'min_samples_leaf': hp.uniformint('min_samples_leaf', 1, 10, q=1.0),
-            'max_features': hp.choice('max_features', ['sqrt', 'log2', None]),
-            'bootstrap': hp.choice('bootstrap', [True, False]),
-            'class_weight': hp.choice('class_weight', [None, 'balanced', 'balanced_subsample'])
+            'num_epochs': hp.uniformint('num_epochs', 5, 500, q=1.0),
+            'batch_size': hp.uniformint('batch_size', 8, 2048, q=1.0),
+            'classifier_num_hidden_units': hp.uniformint('classifier_num_hidden_units', 20, 2000, q=1.0)
         }
 
         trials = Trials()
@@ -453,18 +451,20 @@ def random_forest_(th):
             trials=trials
         )
 
+        X_train_df = pd.DataFrame(ct.fit_transform(X_train_df))
+        X_test_df = pd.DataFrame(ct.transform(X_test_df))
+
         # Initializing and fitting the classifier
-        clf = best_model(trials)
-        pipeline = Pipeline([('column_transformer', ct), ('classifier', clf)])
-        pipeline.fit(X_train_df, y_train_df)
+        cv = best_model(trials)
+        cv.fit(X_train_df, y_train_df)
 
         # Final predictions
-        y_pred_probs = pipeline.predict_proba(X_test_df).T[1]
+        y_pred_probs = cv.predict_proba(X_test_df).T[1]
         y_true = y_test_df
 
         mean_roc_auc.append(roc_auc_score(y_true, y_pred_probs))
         mean_strong_dp.append(strong_demographic_parity_score(s_test, y_pred_probs))
-
+    
     return np.average(mean_roc_auc), np.average(mean_strong_dp), np.std(mean_roc_auc), np.std(mean_strong_dp)
 
 auc_list = []
@@ -475,7 +475,7 @@ std_sdp_list = []
 theta_list = np.arange(0.0, 1.1, 0.1)
 
 for th in theta_list:
-    roc_auc, strong_dp, std_auc, std_sdp = random_forest_(th)
+    roc_auc, strong_dp, std_auc, std_sdp = neural_network_(th)
     auc_list.append(roc_auc)
     sdp_list.append(strong_dp)
     std_auc_list.append(std_auc)
@@ -485,24 +485,24 @@ for th in theta_list:
 ############################# Plot: AUC and SDP trade-off #############################
 
 plt.scatter(sdp_list, auc_list)
-plt.title("AUC and SDP scores obtained by optimizing for different theta values when applying RF")
+plt.title("AUC and SDP scores obtained by optimizing for different theta values when applying NN")
 plt.xlabel("Strong demographic parity")
 plt.ylabel("AUC")
 
 for i, txt in enumerate(theta_list):
     plt.annotate(round(txt,1), (sdp_list[i], auc_list[i]))
 
-plt.savefig('rf_fair_hpo.pdf', bbox_inches='tight')
+plt.savefig('nn_fair_hpo.pdf', bbox_inches='tight')
 
-print("auc_rf_fhpo =", auc_list)
-print("sdp_rf_fhpo =", sdp_list)
-print("std_auc_rf_fhpo =", std_auc_list)
-print("std_sdp_rf_fhpo =", std_sdp_list)
+print("auc_nn_fhpo =", auc_list)
+print("sdp_nn_fhpo =", sdp_list)
+print("std_nn_fhpo =", std_auc_list)
+print("std_nn_fhpo =", std_sdp_list)
 
 # plt.plot(theta_list, auc_list, label="AUC")
 # plt.fill_between(theta_list, [x - y for x, y in zip(auc_list, std_auc_list)], [x + y for x, y in zip(auc_list, std_auc_list)], alpha=0.2)
 # plt.plot(theta_list, sdp_list, label="SDP")
 # plt.fill_between(theta_list, [x - y for x, y in zip(sdp_list, std_sdp_list)], [x + y for x, y in zip(sdp_list, std_sdp_list)], alpha=0.2)
-# plt.title("AUC and SDP scores for different theta values when applying RF")
+# plt.title("AUC and SDP scores for different theta values when applying NN")
 # plt.xlabel("Theta")
 # plt.legend()

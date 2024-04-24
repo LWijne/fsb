@@ -17,10 +17,7 @@ from sklearn.impute import SimpleImputer, MissingIndicator
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import roc_auc_score, f1_score
-
-# Fairlearn
-from fairlearn.metrics import demographic_parity_ratio
+from sklearn.metrics import roc_auc_score
 
 # HyperOpt
 from hyperopt import hp, fmin, tpe, Trials, STATUS_OK
@@ -498,10 +495,10 @@ for i, txt in enumerate(theta_list):
 
 plt.savefig('lr_fair_hpo.pdf', bbox_inches='tight')
 
-print("auc_flr =", auc_list)
-print("sdp_flr =", sdp_list)
-print("std_auc_flr =", std_auc_list)
-print("std_sdp_flr =", std_sdp_list)
+print("auc_lr_fhpo =", auc_list)
+print("sdp_lr_fhpo =", sdp_list)
+print("std_auc_lr_fhpo =", std_auc_list)
+print("std_sdp_lr_fhpo =", std_sdp_list)
 
 # plt.plot(theta_list, auc_list, label="AUC")
 # plt.fill_between(theta_list, [x - y for x, y in zip(auc_list, std_auc_list)], [x + y for x, y in zip(auc_list, std_auc_list)], alpha=0.2)
