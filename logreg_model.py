@@ -416,7 +416,7 @@ for trainset, testset in sloopschepen["folds"].split(sloopschepen["X"],splitter_
     X_test_df = X_test_df.drop(columns=[sensitive_col])
     
     params = {
-        'penalty': hp.choice('penalty', ["l1", "l2", "elasticnet", "none"]),
+        'penalty': hp.choice('penalty', ["l1", "l2", "elasticnet", None]),
         'tol': hp.uniform('tol', 0.00001, 0.001),
         'C': hp.uniform('C', 0.01, 10.0),
         'fit_intercept': hp.choice('fit_intercept', [True, False]),
