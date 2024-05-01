@@ -351,16 +351,14 @@ def cross_val_score_custom(params, X, y, cv=10):
         y_pred_probs = cv.predict_proba(X_test).T[1]
         y_true = y_test
         
-        # nan_inf_error_list = [math.isfinite(x) for x in y_pred_probs]
-        # if 0.0 in nan_inf_error_list:
-        #     print("Error")
-        #     auc_list.append(0.5)
-        #     sdp_list.append(0.5)
-        # else:
-        #     auc_list.append(roc_auc_score(y_true,y_pred_probs))
-        #     sdp_list.append(0.5 + abs(0.5 - roc_auc_score(s_test, y_pred_probs)))
-        auc_perf_list.append(roc_auc_score(y_true,y_pred_probs))
-        auc_fair_list.append(0.5 + abs(0.5 - roc_auc_score(s_test, y_pred_probs)))
+        nan_inf_error_list = [math.isfinite(x) for x in y_pred_probs]
+        if 0.0 in nan_inf_error_list:
+            print("Error")
+            auc_perf_list.append(0.5)
+            auc_fair_list.append(0.5)
+        else:
+            auc_perf_list.append(roc_auc_score(y_true,y_pred_probs))
+            auc_fair_list.append(0.5 + abs(0.5 - roc_auc_score(s_test, y_pred_probs)))
 
 
     # Final results
