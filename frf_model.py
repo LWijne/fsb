@@ -191,6 +191,8 @@ standard_threshold = 0.5 # Classification threshold
 
 thresholds = np.arange(0.05, 1.0, 0.05) # Thresholds for experiments
 
+theta_list = np.arange(0.0, 1.1, 0.1) # Thetas for experiments
+
 # Define list of predictors to use
 predictors = [
     "vessel_type",
@@ -348,7 +350,7 @@ def best_model(trials):
                     trials (Trials object): Trials object.
 
             Returns:
-                    trained_model (FairRandomForestClassifier object): The best model.
+                    trained_model (dict): The best model parameters.
     '''
     valid_trial_list = [trial for trial in trials
                             if STATUS_OK == trial['result']['status']]
@@ -366,7 +368,7 @@ def objective(params):
                     params (dict): The parameters to create the model.
 
             Returns:
-                    (dict): The loss, status and trained model.
+                    (dict): The loss, status and trained model parameters.
     '''
     model = FairRandomForestClassifier(
       random_state=random_state,
@@ -386,27 +388,26 @@ def objective(params):
       cv=K
     )
 
-    return {'loss': -roc_auc, 'status': STATUS_OK, 'trained_model': model}
+    return {'loss': -roc_auc, 'status': STATUS_OK, 'trained_model': params}
 
 
 ############################# Training the classifier, predictions and outcomes #############################
 
-def fair_random_forest_(th):
+def fair_random_forest_():
     '''
     Computes the average and std of AUC and SDP over K folds.
 
             Parameters:
-                    th (float): The theta value for FRF.
 
             Returns:
-                    roc_auc (float): The average of the ROC AUC list.
-                    strong_dp (float): The average of the strong demographic parity list.
-                    std_auc (float): The standard deviation of the ROC AUC list.
-                    std_sdp (float): The standard deviation of the strong demographic parity list.
+                    roc_auc (np.array): The average of the ROC AUC list for each theta.
+                    strong_dp (np.array): The average of the strong demographic parity list for each theta.
+                    std_auc (np.array): The standard deviation of the ROC AUC list for each theta.
+                    std_sdp (np.array): The standard deviation of the strong demographic parity list for each theta.
     '''
 
-    mean_roc_auc = []
-    mean_strong_dp = []
+    roc_auc_list_2d = np.array([])
+    strong_dp_list_2d = np.array([])
     
     y = sloopschepen["y"]
     s = sloopschepen["X"][sensitive_col]
@@ -414,6 +415,9 @@ def fair_random_forest_(th):
 
     # Looping over the folds
     for trainset, testset in sloopschepen["folds"].split(sloopschepen["X"],splitter_y):
+
+        roc_auc_list_1d = np.array([])
+        strong_dp_list_1d = np.array([])
         
         global X_train_df
         global y_train_df
@@ -426,7 +430,7 @@ def fair_random_forest_(th):
         y_test_df = sloopschepen["y"][sloopschepen["y"].index.isin(testset)]
 
         params = {
-            'theta': hp.choice('theta', [th]),
+            'theta': hp.choice('theta', [0.0]),
             'n_bins': hp.choice('n_bins', [256]),
             'bootstrap': hp.choice('bootstrap', [True]),
             'max_depth': hp.uniformint('max_depth', 1, 20, q=1.0),
@@ -447,8 +451,8 @@ def fair_random_forest_(th):
         )
 
         # Initializing and fitting the classifier
-        cv = best_model(trials)
-        
+        best_frf_model_params = best_model(trials)
+
         s_train = pd.DataFrame(X_train_df[sensitive_col]).values.astype(int)
         s_test = X_test_df[sensitive_col]
         
@@ -457,32 +461,40 @@ def fair_random_forest_(th):
         
         X_train_df = pd.DataFrame(ct.fit_transform(X_train_df))
         X_test_df = pd.DataFrame(ct.transform(X_test_df))
+
+        for th in theta_list:
+            cv = FairRandomForestClassifier(
+            random_state=random_state,
+            theta=th,
+            n_bins=best_frf_model_params['n_bins'],
+            max_depth=best_frf_model_params['max_depth'],
+            bootstrap=best_frf_model_params['bootstrap'],
+            n_estimators=best_frf_model_params['n_estimators'],
+            min_samples_split=best_frf_model_params['min_samples_split'],
+            min_samples_leaf=best_frf_model_params['min_samples_leaf'],
+            max_features=best_frf_model_params['max_features']
+            )
+
+            cv.fit(X_train_df, y_train_df, s_train)
+
+            # Final predictions
+            y_pred_probs = cv.predict_proba(X_test_df).T[1]
+            y_true = y_test_df
+
+            roc_auc_list_1d = np.append(roc_auc_list_1d, roc_auc_score(y_true, y_pred_probs))
+            strong_dp_list_1d = np.append(strong_dp_list_1d, strong_demographic_parity_score(s_test, y_pred_probs))
         
-        cv.fit(X_train_df, y_train_df, s_train)
-
-        # Final predictions
-        y_pred_probs = cv.predict_proba(X_test_df).T[1]
-        y_true = y_test_df
-
-        mean_roc_auc.append(roc_auc_score(y_true, y_pred_probs))
-        mean_strong_dp.append(strong_demographic_parity_score(s_test, y_pred_probs))
+        roc_auc_list_2d = np.vstack([roc_auc_list_2d, roc_auc_list_1d]) if roc_auc_list_2d.size else roc_auc_list_1d
+        strong_dp_list_2d = np.vstack([strong_dp_list_2d, strong_dp_list_1d]) if strong_dp_list_2d.size else strong_dp_list_1d
     
-    return np.average(mean_roc_auc), np.average(mean_strong_dp), np.std(mean_roc_auc), np.std(mean_strong_dp)
+        print("Completed a fold")
 
-auc_list = []
-sdp_list = []
-std_auc_list = []
-std_sdp_list = []
+    
+    return np.mean(roc_auc_list_2d, axis=0), np.mean(strong_dp_list_2d, axis=0), np.std(roc_auc_list_2d, axis=0), np.std(strong_dp_list_2d, axis=0)
 
-theta_list = np.arange(0.0, 1.1, 0.1)
+auc_list, sdp_list, std_auc_list, std_sdp_list = fair_random_forest_()
 
-for th in theta_list:
-    roc_auc, strong_dp, std_auc, std_sdp = fair_random_forest_(th)
-    auc_list.append(roc_auc)
-    sdp_list.append(strong_dp)
-    std_auc_list.append(std_auc)
-    std_sdp_list.append(std_sdp)
-    print(((th*10+1)/11)*100, "% complete")
+
 
 ############################# Plot: AUC and SDP trade-off #############################
 
@@ -494,7 +506,7 @@ plt.ylabel("AUC")
 for i, txt in enumerate(theta_list):
     plt.annotate(round(txt,1), (sdp_list[i], auc_list[i]))
 
-plt.savefig('frf.pdf', bbox_inches='tight')
+plt.savefig('frf_exp.pdf', bbox_inches='tight')
 
 print("auc_frf =", auc_list)
 print("sdp_frf =", sdp_list)
