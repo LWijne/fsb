@@ -429,29 +429,28 @@ def fair_random_forest_():
         X_test_df = sloopschepen["X"][sloopschepen["X"].index.isin(testset)]
         y_test_df = sloopschepen["y"][sloopschepen["y"].index.isin(testset)]
 
-        params = {
-            'theta': hp.choice('theta', [0.0]),
-            'n_bins': hp.choice('n_bins', [256]),
-            'bootstrap': hp.choice('bootstrap', [True]),
-            'max_depth': hp.uniformint('max_depth', 1, 20, q=1.0),
-            'max_features': hp.uniform("max_features", 0.05, 0.95),
-            'n_estimators': hp.uniformint('n_estimators', 100, 500, q=1.0),
-            'min_samples_leaf': hp.uniformint('min_samples_leaf', 1, 10, q=1.0),
-            'min_samples_split': hp.uniformint('min_samples_split', 2, 20, q=1.0),
-        }
+        # params = {
+        #     'theta': hp.choice('theta', [0.0]),
+        #     'n_bins': hp.choice('n_bins', [256]),
+        #     'bootstrap': hp.choice('bootstrap', [True]),
+        #     'max_depth': hp.uniformint('max_depth', 1, 20, q=1.0),
+        #     'max_features': hp.uniform("max_features", 0.05, 0.95),
+        #     'n_estimators': hp.uniformint('n_estimators', 100, 500, q=1.0),
+        #     'min_samples_leaf': hp.uniformint('min_samples_leaf', 1, 10, q=1.0),
+        #     'min_samples_split': hp.uniformint('min_samples_split', 2, 20, q=1.0),
+        # }
 
-        trials = Trials()
+        # trials = Trials()
 
-        opt = fmin(
-            fn=objective,
-            space=params,
-            algo=tpe.suggest,
-            max_evals=hyperopt_evals,
-            trials=trials
-        )
+        # opt = fmin(
+        #     fn=objective,
+        #     space=params,
+        #     algo=tpe.suggest,
+        #     max_evals=hyperopt_evals,
+        #     trials=trials
+        # )
 
-        # Initializing and fitting the classifier
-        best_frf_model_params = best_model(trials)
+        # best_frf_model_params = best_model(trials)
 
         s_train = pd.DataFrame(X_train_df[sensitive_col]).values.astype(int)
         s_test = X_test_df[sensitive_col]
@@ -463,16 +462,23 @@ def fair_random_forest_():
         X_test_df = pd.DataFrame(ct.transform(X_test_df))
 
         for th in theta_list:
+            # Initializing and fitting the classifier
+            
+            # cv = FairRandomForestClassifier(
+            # random_state=random_state,
+            # theta=th,
+            # n_bins=best_frf_model_params['n_bins'],
+            # max_depth=best_frf_model_params['max_depth'],
+            # bootstrap=best_frf_model_params['bootstrap'],
+            # n_estimators=best_frf_model_params['n_estimators'],
+            # min_samples_split=best_frf_model_params['min_samples_split'],
+            # min_samples_leaf=best_frf_model_params['min_samples_leaf'],
+            # max_features=best_frf_model_params['max_features']
+            # )
+
             cv = FairRandomForestClassifier(
             random_state=random_state,
-            theta=th,
-            n_bins=best_frf_model_params['n_bins'],
-            max_depth=best_frf_model_params['max_depth'],
-            bootstrap=best_frf_model_params['bootstrap'],
-            n_estimators=best_frf_model_params['n_estimators'],
-            min_samples_split=best_frf_model_params['min_samples_split'],
-            min_samples_leaf=best_frf_model_params['min_samples_leaf'],
-            max_features=best_frf_model_params['max_features']
+            theta=th
             )
 
             cv.fit(X_train_df, y_train_df, s_train)
@@ -508,10 +514,10 @@ for i, txt in enumerate(theta_list):
 
 plt.savefig('frf_exp.pdf', bbox_inches='tight')
 
-print("auc_frf =", auc_list)
-print("sdp_frf =", sdp_list)
-print("std_auc_frf =", std_auc_list)
-print("std_sdp_frf =", std_sdp_list)
+print("auc_frf =", auc_list.tolist())
+print("sdp_frf =", sdp_list.tolist())
+print("std_auc_frf =", std_auc_list.tolist())
+print("std_sdp_frf =", std_sdp_list.tolist())
 
 # plt.plot(theta_list, auc_list, label="AUC")
 # plt.fill_between(theta_list, [x - y for x, y in zip(auc_list, std_auc_list)], [x + y for x, y in zip(auc_list, std_auc_list)], alpha=0.2)

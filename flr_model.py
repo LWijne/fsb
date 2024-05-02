@@ -194,6 +194,8 @@ thresholds = np.arange(0.05, 1.0, 0.05) # Thresholds for experiments
 
 theta = 0.0 # Performance (0) - fairness (1)
 
+theta_list = np.arange(0.0, 1.1, 0.1) # Thetas for experiments
+
 # Define list of predictors to use
 predictors = [
     "vessel_type",
@@ -355,7 +357,7 @@ def best_model(trials):
                     trials (Trials object): Trials object.
 
             Returns:
-                    trained_model (GridSearchReduction object): The best model.
+                    trained_model (dict): The best model parameters.
     '''
     valid_trial_list = [trial for trial in trials
                             if STATUS_OK == trial['result']['status']]
@@ -373,7 +375,7 @@ def objective(params):
                     params (dict): The parameters to create the model.
 
             Returns:
-                    (dict): The loss, status and trained model.
+                    (dict): The loss, status and trained model parameters.
     '''
     model = GridSearchReduction(
       prot_attr=sensitive_col,
@@ -401,27 +403,26 @@ def objective(params):
     )
     goal = (1-theta) * roc_auc_y - theta * roc_auc_s
     
-    return {'loss': -goal, 'status': STATUS_OK, 'trained_model': model}
+    return {'loss': -goal, 'status': STATUS_OK, 'trained_model': params}
 
 
 ############################# Training the classifier, predictions and outcomes #############################
 
-def fair_logistic_regression_(th):
+def fair_logistic_regression_():
     '''
     Computes the average and std of AUC and SDP over K folds.
 
             Parameters:
-                    th (float): The theta value for FLR.
 
             Returns:
-                    roc_auc (float): The average of the ROC AUC list.
-                    strong_dp (float): The average of the strong demographic parity list.
-                    std_auc (float): The standard deviation of the ROC AUC list.
-                    std_sdp (float): The standard deviation of the strong demographic parity list.
+                    roc_auc (np.array): The average of the ROC AUC list for each theta.
+                    strong_dp (np.array): The average of the strong demographic parity list for each theta.
+                    std_auc (np.array): The standard deviation of the ROC AUC list for each theta.
+                    std_sdp (np.array): The standard deviation of the strong demographic parity list for each theta.
     '''
 
-    mean_roc_auc = []
-    mean_strong_dp = []
+    roc_auc_list_2d = np.array([])
+    strong_dp_list_2d = np.array([])
     
     y = sloopschepen["y"]
     s = sloopschepen["X"][sensitive_col]
@@ -429,11 +430,12 @@ def fair_logistic_regression_(th):
 
     # Looping over the folds
     for trainset, testset in sloopschepen["folds"].split(sloopschepen["X"],splitter_y):
+
+        roc_auc_list_1d = np.array([])
+        strong_dp_list_1d = np.array([])
         
         global X_train_df
         global y_train_df
-        global theta
-        theta = th
 
         # Splitting and preparing the data, targets and sensitive attributes
         X_train_df = sloopschepen["X"][sloopschepen["X"].index.isin(trainset)]
@@ -443,7 +445,7 @@ def fair_logistic_regression_(th):
         
         params = {
             'penalty': hp.choice('penalty', ["l1", "l2", "elasticnet", None]),
-            'constraint_weight': hp.uniform('constraint_weight', 0.0, 1.0),
+            'constraint_weight': hp.choice('constraint_weight', [0.0]),
             'grid_size': hp.uniformint('grid_size', 2, 50, q=1.0),
             'grid_limit': hp.uniform('grid_limit', 0.4, 10.0),
             'loss': hp.choice('loss', ["ZeroOne", "Square", "Absolute"]),
@@ -464,6 +466,8 @@ def fair_logistic_regression_(th):
             max_evals=hyperopt_evals,
             trials=trials
         )
+
+        best_frf_model_params = best_model(trials)
         
         s_test = X_test_df[sensitive_col].astype(int)
         
@@ -474,51 +478,64 @@ def fair_logistic_regression_(th):
         X_train_df = pd.DataFrame(X_train_df, columns=columns)
         X_test_df = pd.DataFrame(ct.transform(X_test_df), columns=columns)
 
-        # Initializing and fitting the classifier
-        cv = best_model(trials)
-        cv.fit(X_train_df, y_train_df)
+        for th in theta_list:
+            # Initializing and fitting the classifier
+            
+            cv = GridSearchReduction(
+            prot_attr=sensitive_col,
+            estimator=LogisticRegression(random_state=random_state, 
+                                        penalty=best_frf_model_params['penalty'], 
+                                        tol=best_frf_model_params['tol'], 
+                                        C=best_frf_model_params['C'], 
+                                        fit_intercept=best_frf_model_params['fit_intercept'], 
+                                        class_weight=best_frf_model_params['class_weight'], 
+                                        solver='saga', 
+                                        max_iter=best_frf_model_params['max_iter'], 
+                                        l1_ratio=best_frf_model_params['l1_ratio']),
+            constraints="DemographicParity",
+            constraint_weight=th,
+            grid_size=best_frf_model_params['grid_size'],
+            grid_limit=best_frf_model_params['grid_limit'],
+            drop_prot_attr=True,
+            loss=best_frf_model_params['loss']
+            )
 
-        # Final predictions
-        y_pred_probs = cv.predict_proba(X_test_df).T[1]
-        y_true = y_test_df
+            cv.fit(X_train_df, y_train_df)
 
-        mean_roc_auc.append(roc_auc_score(y_true, y_pred_probs))
-        mean_strong_dp.append(strong_demographic_parity_score(s_test, y_pred_probs))
+            # Final predictions
+            y_pred_probs = cv.predict_proba(X_test_df).T[1]
+            y_true = y_test_df
 
-    return np.average(mean_roc_auc), np.average(mean_strong_dp), np.std(mean_roc_auc), np.std(mean_strong_dp)
+            roc_auc_list_1d = np.append(roc_auc_list_1d, roc_auc_score(y_true, y_pred_probs))
+            strong_dp_list_1d = np.append(strong_dp_list_1d, strong_demographic_parity_score(s_test, y_pred_probs))
+        
+        roc_auc_list_2d = np.vstack([roc_auc_list_2d, roc_auc_list_1d]) if roc_auc_list_2d.size else roc_auc_list_1d
+        strong_dp_list_2d = np.vstack([strong_dp_list_2d, strong_dp_list_1d]) if strong_dp_list_2d.size else strong_dp_list_1d
+    
+        print("Completed a fold")
+
+    
+    return np.mean(roc_auc_list_2d, axis=0), np.mean(strong_dp_list_2d, axis=0), np.std(roc_auc_list_2d, axis=0), np.std(strong_dp_list_2d, axis=0)
 
 
-auc_list = []
-sdp_list = []
-std_auc_list = []
-std_sdp_list = []
-
-theta_list = np.arange(0.0, 1.1, 0.1)
-
-for th in theta_list:
-    roc_auc, strong_dp, std_auc, std_sdp = fair_logistic_regression_(th)
-    auc_list.append(roc_auc)
-    sdp_list.append(strong_dp)
-    std_auc_list.append(std_auc)
-    std_sdp_list.append(std_sdp)
-    print(((th*10+1)/11)*100, "% complete")
+auc_list, sdp_list, std_auc_list, std_sdp_list = fair_logistic_regression_()
 
 ############################# Plot: AUC and SDP trade-off #############################
 
 plt.scatter(sdp_list, auc_list)
-plt.title("AUC and SDP scores obtained by optimizing for different theta values when applying FLR")
+plt.title("AUC and SDP scores obtained by optimizing for different constraint weight values when applying FLR")
 plt.xlabel("Strong demographic parity")
 plt.ylabel("AUC")
 
 for i, txt in enumerate(theta_list):
     plt.annotate(round(txt,1), (sdp_list[i], auc_list[i]))
 
-plt.savefig('flr.pdf', bbox_inches='tight')
+plt.savefig('flr_hpo_each_fold.pdf', bbox_inches='tight')
 
-print("auc_flr =", auc_list)
-print("sdp_flr =", sdp_list)
-print("std_auc_flr =", std_auc_list)
-print("std_sdp_flr =", std_sdp_list)
+print("auc_flr =", auc_list.tolist())
+print("sdp_flr =", sdp_list.tolist())
+print("std_auc_flr =", std_auc_list.tolist())
+print("std_sdp_flr =", std_sdp_list.tolist())
 
 # plt.plot(theta_list, auc_list, label="AUC")
 # plt.fill_between(theta_list, [x - y for x, y in zip(auc_list, std_auc_list)], [x + y for x, y in zip(auc_list, std_auc_list)], alpha=0.2)
