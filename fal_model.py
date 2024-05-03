@@ -410,11 +410,12 @@ def objective(params):
 
 ############################# Training the classifier, predictions and outcomes #############################
 
-def fair_adversarial_learning_():
+def fair_adversarial_learning_(best_fal_model_params):
     '''
     Computes the average and std of AUC and SDP over K folds.
 
             Parameters:
+                    best_fal_model_params (dict): The parameters of the best model.
 
             Returns:
                     roc_auc (np.array): The average of the ROC AUC list for each theta.
@@ -444,25 +445,6 @@ def fair_adversarial_learning_():
         y_train_df = sloopschepen["y"][sloopschepen["y"].index.isin(trainset)]
         X_test_df = sloopschepen["X"][sloopschepen["X"].index.isin(testset)]
         y_test_df = sloopschepen["y"][sloopschepen["y"].index.isin(testset)]
-        
-        params = {
-            'adversary_loss_weight': hp.choice('adversary_loss_weight', [0.1]),
-            'num_epochs': hp.uniformint('num_epochs', 5, 500, q=1.0),
-            'batch_size': hp.uniformint('batch_size', 8, 2048, q=1.0),
-            'classifier_num_hidden_units': hp.uniformint('classifier_num_hidden_units', 20, 2000, q=1.0)
-        }
-
-        trials = Trials()
-
-        opt = fmin(
-            fn=objective,
-            space=params,
-            algo=tpe.suggest,
-            max_evals=hyperopt_evals,
-            trials=trials
-        )
-
-        params_best_model = best_model(trials)
     
         s_train = X_train_df[sensitive_col]
         s_test = X_test_df[sensitive_col]
@@ -480,9 +462,9 @@ def fair_adversarial_learning_():
                   debias=True,
                   random_state=random_state,
                   adversary_loss_weight=th,
-                  num_epochs=params_best_model['num_epochs'],
-                  batch_size=params_best_model['batch_size'],
-                  classifier_num_hidden_units=params_best_model['classifier_num_hidden_units']
+                  num_epochs=best_fal_model_params['num_epochs'],
+                  batch_size=best_fal_model_params['batch_size'],
+                  classifier_num_hidden_units=best_fal_model_params['classifier_num_hidden_units']
               )
 
             cv.fit(X_train_df, y_train_df)
@@ -502,19 +484,88 @@ def fair_adversarial_learning_():
     
     return np.mean(roc_auc_list_2d, axis=0), np.mean(strong_dp_list_2d, axis=0), np.std(roc_auc_list_2d, axis=0), np.std(strong_dp_list_2d, axis=0)
 
-auc_list, sdp_list, std_auc_list, std_sdp_list = fair_adversarial_learning_()
+
+y = sloopschepen["y"]
+s = sloopschepen["X"][sensitive_col]
+splitter_y = y.astype(str) + s.astype(str)
+
+best_auc = 0.0
+best_fal_model_params = None
+
+# Looping over the folds
+for trainset, testset in sloopschepen["folds"].split(sloopschepen["X"],splitter_y):
+    
+    global X_train_df
+    global y_train_df
+
+    # Splitting and preparing the data, targets and sensitive attributes
+    X_train_df = sloopschepen["X"][sloopschepen["X"].index.isin(trainset)]
+    y_train_df = sloopschepen["y"][sloopschepen["y"].index.isin(trainset)]
+    X_test_df = sloopschepen["X"][sloopschepen["X"].index.isin(testset)]
+    y_test_df = sloopschepen["y"][sloopschepen["y"].index.isin(testset)]
+    
+    params = {
+        'adversary_loss_weight': hp.choice('adversary_loss_weight', [0.1]),
+        'num_epochs': hp.uniformint('num_epochs', 5, 500, q=1.0),
+        'batch_size': hp.uniformint('batch_size', 8, 2048, q=1.0),
+        'classifier_num_hidden_units': hp.uniformint('classifier_num_hidden_units', 20, 2000, q=1.0)
+    }
+
+    trials = Trials()
+
+    opt = fmin(
+        fn=objective,
+        space=params,
+        algo=tpe.suggest,
+        max_evals=hyperopt_evals,
+        trials=trials
+    )
+
+    model_params = best_model(trials)
+
+    s_train = X_train_df[sensitive_col]
+    s_test = X_test_df[sensitive_col]
+    X_train_df = X_train_df.drop(columns=[sensitive_col])
+    X_test_df = X_test_df.drop(columns=[sensitive_col])
+    
+    X_train_df = pd.DataFrame(ct.fit_transform(X_train_df))
+    X_test_df = pd.DataFrame(ct.transform(X_test_df))
+
+    cv = AdversarialDebiasing(
+        prot_attr=s_train,
+        debias=True,
+        random_state=random_state,
+        adversary_loss_weight=model_params['adversary_loss_weight'],
+        num_epochs=model_params['num_epochs'],
+        batch_size=model_params['batch_size'],
+        classifier_num_hidden_units=model_params['classifier_num_hidden_units']
+    )
+
+    cv.fit(X_train_df, y_train_df)
+
+    # Final predictions
+    y_pred_probs = cv.predict_proba(X_test_df).T[1]
+    y_true = y_test_df
+
+    roc_auc = roc_auc_score(y_true, y_pred_probs)
+    if roc_auc > best_auc:
+        best_auc = roc_auc
+        best_fal_model_params = model_params
+
+
+auc_list, sdp_list, std_auc_list, std_sdp_list = fair_adversarial_learning_(best_fal_model_params)
 
 ############################# Plot: AUC and SDP trade-off #############################
 
 plt.scatter(sdp_list, auc_list)
-plt.title("AUC and SDP scores obtained by optimizing for different adversary loss weight values when applying FAL")
+plt.title("AUC and SDP scores obtained by using different adversary loss weight values when applying FAL")
 plt.xlabel("Strong demographic parity")
 plt.ylabel("AUC")
 
 for i, txt in enumerate(theta_list):
     plt.annotate(round(txt,2), (sdp_list[i], auc_list[i]))
 
-plt.savefig('fal_hpo_each_fold.pdf', bbox_inches='tight')
+plt.savefig('fal_hpo_once.pdf', bbox_inches='tight')
 
 print("auc_fal =", auc_list.tolist())
 print("sdp_fal =", sdp_list.tolist())

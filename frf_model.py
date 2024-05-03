@@ -393,11 +393,12 @@ def objective(params):
 
 ############################# Training the classifier, predictions and outcomes #############################
 
-def fair_random_forest_():
+def fair_random_forest_(best_frf_model_params):
     '''
     Computes the average and std of AUC and SDP over K folds.
 
             Parameters:
+                    best_frf_model_params (dict): The parameters of the best model.
 
             Returns:
                     roc_auc (np.array): The average of the ROC AUC list for each theta.
@@ -429,29 +430,6 @@ def fair_random_forest_():
         X_test_df = sloopschepen["X"][sloopschepen["X"].index.isin(testset)]
         y_test_df = sloopschepen["y"][sloopschepen["y"].index.isin(testset)]
 
-        # params = {
-        #     'theta': hp.choice('theta', [0.0]),
-        #     'n_bins': hp.choice('n_bins', [256]),
-        #     'bootstrap': hp.choice('bootstrap', [True]),
-        #     'max_depth': hp.uniformint('max_depth', 1, 20, q=1.0),
-        #     'max_features': hp.uniform("max_features", 0.05, 0.95),
-        #     'n_estimators': hp.uniformint('n_estimators', 100, 500, q=1.0),
-        #     'min_samples_leaf': hp.uniformint('min_samples_leaf', 1, 10, q=1.0),
-        #     'min_samples_split': hp.uniformint('min_samples_split', 2, 20, q=1.0),
-        # }
-
-        # trials = Trials()
-
-        # opt = fmin(
-        #     fn=objective,
-        #     space=params,
-        #     algo=tpe.suggest,
-        #     max_evals=hyperopt_evals,
-        #     trials=trials
-        # )
-
-        # best_frf_model_params = best_model(trials)
-
         s_train = pd.DataFrame(X_train_df[sensitive_col]).values.astype(int)
         s_test = X_test_df[sensitive_col]
         
@@ -463,22 +441,17 @@ def fair_random_forest_():
 
         for th in theta_list:
             # Initializing and fitting the classifier
-            
-            # cv = FairRandomForestClassifier(
-            # random_state=random_state,
-            # theta=th,
-            # n_bins=best_frf_model_params['n_bins'],
-            # max_depth=best_frf_model_params['max_depth'],
-            # bootstrap=best_frf_model_params['bootstrap'],
-            # n_estimators=best_frf_model_params['n_estimators'],
-            # min_samples_split=best_frf_model_params['min_samples_split'],
-            # min_samples_leaf=best_frf_model_params['min_samples_leaf'],
-            # max_features=best_frf_model_params['max_features']
-            # )
 
             cv = FairRandomForestClassifier(
             random_state=random_state,
-            theta=th
+            theta=th,
+            n_bins=best_frf_model_params['n_bins'],
+            max_depth=best_frf_model_params['max_depth'],
+            bootstrap=best_frf_model_params['bootstrap'],
+            n_estimators=best_frf_model_params['n_estimators'],
+            min_samples_split=best_frf_model_params['min_samples_split'],
+            min_samples_leaf=best_frf_model_params['min_samples_leaf'],
+            max_features=best_frf_model_params['max_features']
             )
 
             cv.fit(X_train_df, y_train_df, s_train)
@@ -498,21 +471,99 @@ def fair_random_forest_():
     
     return np.mean(roc_auc_list_2d, axis=0), np.mean(strong_dp_list_2d, axis=0), np.std(roc_auc_list_2d, axis=0), np.std(strong_dp_list_2d, axis=0)
 
-auc_list, sdp_list, std_auc_list, std_sdp_list = fair_random_forest_()
+
+
+y = sloopschepen["y"]
+s = sloopschepen["X"][sensitive_col]
+splitter_y = y.astype(str) + s.astype(str)
+
+best_auc = 0.0
+best_frf_model_params = None
+
+# Looping over the folds
+for trainset, testset in sloopschepen["folds"].split(sloopschepen["X"],splitter_y):
+        
+        global X_train_df
+        global y_train_df
+        
+        # Splitting and preparing the data, targets and sensitive attributes
+        X_train_df = sloopschepen["X"][sloopschepen["X"].index.isin(trainset)]
+        y_train_df = sloopschepen["y"][sloopschepen["y"].index.isin(trainset)]
+        
+        X_test_df = sloopschepen["X"][sloopschepen["X"].index.isin(testset)]
+        y_test_df = sloopschepen["y"][sloopschepen["y"].index.isin(testset)]
+
+        params = {
+            'theta': hp.choice('theta', [0.0]),
+            'n_bins': hp.choice('n_bins', [256]),
+            'bootstrap': hp.choice('bootstrap', [True]),
+            'max_depth': hp.uniformint('max_depth', 1, 20, q=1.0),
+            'max_features': hp.uniform("max_features", 0.05, 0.95),
+            'n_estimators': hp.uniformint('n_estimators', 100, 500, q=1.0),
+            'min_samples_leaf': hp.uniformint('min_samples_leaf', 1, 10, q=1.0),
+            'min_samples_split': hp.uniformint('min_samples_split', 2, 20, q=1.0),
+        }
+
+        trials = Trials()
+
+        opt = fmin(
+            fn=objective,
+            space=params,
+            algo=tpe.suggest,
+            max_evals=hyperopt_evals,
+            trials=trials
+        )
+
+        model_params = best_model(trials)
+
+        s_train = pd.DataFrame(X_train_df[sensitive_col]).values.astype(int)
+        s_test = X_test_df[sensitive_col]
+        
+        X_train_df = X_train_df.drop(columns=[sensitive_col])
+        X_test_df = X_test_df.drop(columns=[sensitive_col])
+        
+        X_train_df = pd.DataFrame(ct.fit_transform(X_train_df))
+        X_test_df = pd.DataFrame(ct.transform(X_test_df))
+
+        cv = FairRandomForestClassifier(
+        random_state=random_state,
+        theta=model_params['theta'],
+        n_bins=model_params['n_bins'],
+        max_depth=model_params['max_depth'],
+        bootstrap=model_params['bootstrap'],
+        n_estimators=model_params['n_estimators'],
+        min_samples_split=model_params['min_samples_split'],
+        min_samples_leaf=model_params['min_samples_leaf'],
+        max_features=model_params['max_features']
+        )
+
+        cv.fit(X_train_df, y_train_df, s_train)
+
+        # Final predictions
+        y_pred_probs = cv.predict_proba(X_test_df).T[1]
+        y_true = y_test_df
+
+        roc_auc = roc_auc_score(y_true, y_pred_probs)
+        if roc_auc > best_auc:
+            best_auc = roc_auc
+            best_frf_model_params = model_params
+
+    
+auc_list, sdp_list, std_auc_list, std_sdp_list = fair_random_forest_(best_frf_model_params)
 
 
 
 ############################# Plot: AUC and SDP trade-off #############################
 
 plt.scatter(sdp_list, auc_list)
-plt.title("AUC and SDP scores obtained by optimizing for different theta values when applying FRF")
+plt.title("AUC and SDP scores obtained by using different theta values when applying FRF")
 plt.xlabel("Strong demographic parity")
 plt.ylabel("AUC")
 
 for i, txt in enumerate(theta_list):
     plt.annotate(round(txt,1), (sdp_list[i], auc_list[i]))
 
-plt.savefig('frf_exp.pdf', bbox_inches='tight')
+plt.savefig('frf_hpo_once.pdf', bbox_inches='tight')
 
 print("auc_frf =", auc_list.tolist())
 print("sdp_frf =", sdp_list.tolist())

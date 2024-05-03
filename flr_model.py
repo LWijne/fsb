@@ -408,11 +408,12 @@ def objective(params):
 
 ############################# Training the classifier, predictions and outcomes #############################
 
-def fair_logistic_regression_():
+def fair_logistic_regression_(best_flr_model_params):
     '''
     Computes the average and std of AUC and SDP over K folds.
 
             Parameters:
+                    best_flr_model_params (dict): The parameters of the best model.
 
             Returns:
                     roc_auc (np.array): The average of the ROC AUC list for each theta.
@@ -443,32 +444,6 @@ def fair_logistic_regression_():
         X_test_df = sloopschepen["X"][sloopschepen["X"].index.isin(testset)]
         y_test_df = sloopschepen["y"][sloopschepen["y"].index.isin(testset)]
         
-        params = {
-            'penalty': hp.choice('penalty', ["l1", "l2", "elasticnet", None]),
-            'constraint_weight': hp.choice('constraint_weight', [0.0]),
-            'grid_size': hp.uniformint('grid_size', 2, 50, q=1.0),
-            'grid_limit': hp.uniform('grid_limit', 0.4, 10.0),
-            'loss': hp.choice('loss', ["ZeroOne", "Square", "Absolute"]),
-            'tol': hp.uniform('tol', 0.00001, 0.001),
-            'C': hp.uniform('C', 0.01, 10.0),
-            'fit_intercept': hp.choice('fit_intercept', [True, False]),
-            'class_weight': hp.choice('class_weight', [None, 'balanced']),
-            'max_iter': hp.uniformint('max_iter', 10, 1000, q=1.0),
-            'l1_ratio': hp.uniform('l1_ratio', 0.0, 1.0)
-        }
-
-        trials = Trials()
-
-        opt = fmin(
-            fn=objective,
-            space=params,
-            algo=tpe.suggest,
-            max_evals=hyperopt_evals,
-            trials=trials
-        )
-
-        best_frf_model_params = best_model(trials)
-        
         s_test = X_test_df[sensitive_col].astype(int)
         
         X_train_df = ct.fit_transform(X_train_df)
@@ -484,20 +459,20 @@ def fair_logistic_regression_():
             cv = GridSearchReduction(
             prot_attr=sensitive_col,
             estimator=LogisticRegression(random_state=random_state, 
-                                        penalty=best_frf_model_params['penalty'], 
-                                        tol=best_frf_model_params['tol'], 
-                                        C=best_frf_model_params['C'], 
-                                        fit_intercept=best_frf_model_params['fit_intercept'], 
-                                        class_weight=best_frf_model_params['class_weight'], 
+                                        penalty=best_flr_model_params['penalty'], 
+                                        tol=best_flr_model_params['tol'], 
+                                        C=best_flr_model_params['C'], 
+                                        fit_intercept=best_flr_model_params['fit_intercept'], 
+                                        class_weight=best_flr_model_params['class_weight'], 
                                         solver='saga', 
-                                        max_iter=best_frf_model_params['max_iter'], 
-                                        l1_ratio=best_frf_model_params['l1_ratio']),
+                                        max_iter=best_flr_model_params['max_iter'], 
+                                        l1_ratio=best_flr_model_params['l1_ratio']),
             constraints="DemographicParity",
             constraint_weight=th,
-            grid_size=best_frf_model_params['grid_size'],
-            grid_limit=best_frf_model_params['grid_limit'],
+            grid_size=best_flr_model_params['grid_size'],
+            grid_limit=best_flr_model_params['grid_limit'],
             drop_prot_attr=True,
-            loss=best_frf_model_params['loss']
+            loss=best_flr_model_params['loss']
             )
 
             cv.fit(X_train_df, y_train_df)
@@ -517,20 +492,104 @@ def fair_logistic_regression_():
     
     return np.mean(roc_auc_list_2d, axis=0), np.mean(strong_dp_list_2d, axis=0), np.std(roc_auc_list_2d, axis=0), np.std(strong_dp_list_2d, axis=0)
 
+y = sloopschepen["y"]
+s = sloopschepen["X"][sensitive_col]
+splitter_y = y.astype(str) + s.astype(str)
 
-auc_list, sdp_list, std_auc_list, std_sdp_list = fair_logistic_regression_()
+best_auc = 0.0
+best_flr_model_params = None
+
+# Looping over the folds
+for trainset, testset in sloopschepen["folds"].split(sloopschepen["X"],splitter_y):
+    
+    global X_train_df
+    global y_train_df
+
+    # Splitting and preparing the data, targets and sensitive attributes
+    X_train_df = sloopschepen["X"][sloopschepen["X"].index.isin(trainset)]
+    y_train_df = sloopschepen["y"][sloopschepen["y"].index.isin(trainset)]
+    X_test_df = sloopschepen["X"][sloopschepen["X"].index.isin(testset)]
+    y_test_df = sloopschepen["y"][sloopschepen["y"].index.isin(testset)]
+    
+    params = {
+        'penalty': hp.choice('penalty', ["l1", "l2", "elasticnet", None]),
+        'constraint_weight': hp.choice('constraint_weight', [0.0]),
+        'grid_size': hp.uniformint('grid_size', 2, 50, q=1.0),
+        'grid_limit': hp.uniform('grid_limit', 0.4, 10.0),
+        'loss': hp.choice('loss', ["ZeroOne", "Square", "Absolute"]),
+        'tol': hp.uniform('tol', 0.00001, 0.001),
+        'C': hp.uniform('C', 0.01, 10.0),
+        'fit_intercept': hp.choice('fit_intercept', [True, False]),
+        'class_weight': hp.choice('class_weight', [None, 'balanced']),
+        'max_iter': hp.uniformint('max_iter', 10, 1000, q=1.0),
+        'l1_ratio': hp.uniform('l1_ratio', 0.0, 1.0)
+    }
+
+    trials = Trials()
+
+    opt = fmin(
+        fn=objective,
+        space=params,
+        algo=tpe.suggest,
+        max_evals=hyperopt_evals,
+        trials=trials
+    )
+
+    model_params = best_model(trials)
+    
+    s_test = X_test_df[sensitive_col].astype(int)
+    
+    X_train_df = ct.fit_transform(X_train_df)
+    
+    columns = list(ct.transformers_[0][1][2].get_feature_names_out())+list(ct.transformers_[1][1][1].get_feature_names_out())+['country_current_flag', 'country_previous_flag']
+
+    X_train_df = pd.DataFrame(X_train_df, columns=columns)
+    X_test_df = pd.DataFrame(ct.transform(X_test_df), columns=columns)
+
+    cv = GridSearchReduction(
+    prot_attr=sensitive_col,
+    estimator=LogisticRegression(random_state=random_state, 
+                                penalty=model_params['penalty'], 
+                                tol=model_params['tol'], 
+                                C=model_params['C'], 
+                                fit_intercept=model_params['fit_intercept'], 
+                                class_weight=model_params['class_weight'], 
+                                solver='saga', 
+                                max_iter=model_params['max_iter'], 
+                                l1_ratio=model_params['l1_ratio']),
+    constraints="DemographicParity",
+    constraint_weight=model_params['constraint_weight'],
+    grid_size=model_params['grid_size'],
+    grid_limit=model_params['grid_limit'],
+    drop_prot_attr=True,
+    loss=model_params['loss']
+    )
+
+    cv.fit(X_train_df, y_train_df)
+
+    # Final predictions
+    y_pred_probs = cv.predict_proba(X_test_df).T[1]
+    y_true = y_test_df
+
+    roc_auc = roc_auc_score(y_true, y_pred_probs)
+    if roc_auc > best_auc:
+        best_auc = roc_auc
+        best_flr_model_params = model_params
+
+
+auc_list, sdp_list, std_auc_list, std_sdp_list = fair_logistic_regression_(best_flr_model_params)
 
 ############################# Plot: AUC and SDP trade-off #############################
 
 plt.scatter(sdp_list, auc_list)
-plt.title("AUC and SDP scores obtained by optimizing for different constraint weight values when applying FLR")
+plt.title("AUC and SDP scores obtained by using different constraint weight values when applying FLR")
 plt.xlabel("Strong demographic parity")
 plt.ylabel("AUC")
 
 for i, txt in enumerate(theta_list):
     plt.annotate(round(txt,1), (sdp_list[i], auc_list[i]))
 
-plt.savefig('flr_hpo_each_fold.pdf', bbox_inches='tight')
+plt.savefig('flr_hpo_once.pdf', bbox_inches='tight')
 
 print("auc_flr =", auc_list.tolist())
 print("sdp_flr =", sdp_list.tolist())
