@@ -7,7 +7,7 @@
 START=$SECONDS
 
 echo "[$SHELL] #### Starting script"
-python3 -m  frf_model
+python3 -m  frf_model_gridsearch
 echo "[$SHELL] ## Script finished"
 
 FINISH=$SECONDS
