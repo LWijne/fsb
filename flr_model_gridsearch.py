@@ -418,7 +418,7 @@ def fair_logistic_regression_(th):
             'grid_size': [5, 10, 20]
         }
 
-        best_score = 0.0
+        best_score = float('-inf')
         best_grid = None
 
         for g in tqdm(ParameterGrid(params)):

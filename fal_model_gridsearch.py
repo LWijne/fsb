@@ -424,7 +424,7 @@ def fair_adversarial_learning_(th):
             'classifier_num_hidden_units': [100, 200, 1000]
         }
 
-        best_score = 0.0
+        best_score = float('-inf')
         best_grid = None
 
         for g in tqdm(ParameterGrid(params)):
