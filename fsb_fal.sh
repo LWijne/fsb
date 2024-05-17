@@ -7,7 +7,7 @@
 START=$SECONDS
 
 echo "[$SHELL] #### Starting script"
-python3 -m  fal_model_gridsearch
+python3 -m  adult_fal_model_no_hpo
 echo "[$SHELL] ## Script finished"
 
 FINISH=$SECONDS

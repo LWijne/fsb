@@ -9,6 +9,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import sys
 import copy
+import urllib.request
+import joblib
 
 # Sklearn
 from sklearn.model_selection import StratifiedKFold
@@ -43,18 +45,14 @@ def read_data():
 
 
             Returns:
-                    sloopschepen (pandas.DataFrame): DataFrame containing the relevant data.
+                    datasets (pandas.DataFrame): DataFrame containing the relevant data.
     '''
 
-    # Get the file
-    sb_file = "sloopschepen_2024-01-22.csv"
-    # Read
-    sloopschepen = pd.read_csv(sb_file).drop("Unnamed: 0",axis=1)
-    # Filter out active ships
-    sloopschepen = sloopschepen[sloopschepen.dismantled == 1]
-    # Get the relevant columns
-    sloopschepen = sloopschepen[predictors+[target_col]].reset_index(drop=True)
-    return sloopschepen
+    datasets_url = "https://github.com/pereirabarataap/fair_tree_classifier/raw/main/datasets.pkl"    
+    datasets = joblib.load(urllib.request.urlopen(datasets_url))
+    datasets = datasets['adult']
+    datasets = pd.concat([datasets["X"], datasets["y"].to_frame(), datasets["z"]["gender"].to_frame()], axis=1)
+    return datasets
 
 class MissIndicator():
     
@@ -118,30 +116,25 @@ class Clamper():
         
         return transformed_X
 
-def data_pre_processing(sloopschepen):
+def data_pre_processing(adult):
     '''
     Missing value imputation and converting the sensitive attribute into a binary attribute.
 
             Parameters:
-                    sloopschepen (pandas.DataFrame): DataFrame containing the data.
+                    adult (pandas.DataFrame): DataFrame containing the data.
 
             Returns:
-                    sloopschepen (pandas.DataFrame): DataFrame containing the preprocessed data.
+                    adult (pandas.DataFrame): DataFrame containing the preprocessed data.
     '''
 
-    EOL_FOC_list = ["KNA", "COM", "PLW", "TUV", "TGO", "TZA", "VCT", "SLE"]
-    for x in ["country_current_flag", "country_previous_flag"]:
-        sloopschepen[x][~sloopschepen[x].isin(EOL_FOC_list)] = 0 # non-FOC for ship-breaking
-        sloopschepen[x][sloopschepen[x].isin(EOL_FOC_list)] = 1 # FOC for ship-breaking acc to NGO SP
+    adult["gender"][adult["gender"] == "Male"] = 0 # Male
+    adult["gender"][adult["gender"] == "Female"] = 1 # Female
         
     # Replace NaN's with 'missing' for string columns
     for x in cat_columns:
-        sloopschepen[x] = sloopschepen[x].fillna('missing')
-        # Also replace values with "unknown" or similar to missing
-        sloopschepen[x][sloopschepen[x].apply(str.lower).str.contains("unknown|unspecified")] = 'missing'
-        sloopschepen[x][sloopschepen[x].apply(str.lower) == "unk"] = 'missing' 
+        adult[x] = adult[x].fillna('missing') 
 
-    return sloopschepen
+    return adult
 
 
 def data_prep(df, K, predictors, target_col):
@@ -181,9 +174,9 @@ K = 10 # K-fold CV
 
 hyperopt_evals = 200 # Max number of evaluations for HPO
 
-target_col = "beached" # Target
+target_col = "income" # Target
 
-sensitive_col = "country_current_flag" # Sensitive attribute
+sensitive_col = "gender" # Sensitive attribute
 
 random_state = 42 # Seed to be used for reproducibility 
 
@@ -195,32 +188,35 @@ theta_list = np.arange(0.0, 1.1, 0.1) # Thetas for experiments
 
 # Define list of predictors to use
 predictors = [
-    "vessel_type",
-    "gross_tonnage",
-    "port_of_registry",
-    "country_current_flag",
-    "country_previous_flag",
-    "years_since_final_flag_swap",
-    "pop_current_flag",
-    "gdpcap_current_flag",
-    "speed",
-    "age_in_months"
+    "fnlwgt",
+    "education-num",
+    "capital-gain",
+    "capital-loss",
+    "hours-per-week",
+    "workclass",
+    "marital-status",
+    "occupation",
+    "relationship",
+    "native-country",
+    "gender"
 ]
 
 # Specify which predictors are numerical
 num_columns = [
-    "gross_tonnage",
-    "years_since_final_flag_swap",
-    "speed",
-    "age_in_months",
-    "pop_current_flag",
-    "gdpcap_current_flag"
+    "fnlwgt",
+    "education-num",
+    "capital-gain",
+    "capital-loss",
+    "hours-per-week"
 ]
 
 # Specify which predictors are categorical and need to be one-hot-encoded
 cat_columns = [
-    "vessel_type",
-    "port_of_registry"
+    "workclass",
+    "marital-status",
+    "occupation",
+    "relationship",
+    "native-country"
 ]
 
 num_transformer = Pipeline([
@@ -240,11 +236,11 @@ ct = ColumnTransformer([
     remainder='passthrough'
 )
 
-sloopschepen = read_data()
-sloopschepen = data_pre_processing(sloopschepen)
+adult = read_data()
+adult = data_pre_processing(adult)
 
 # Prepare the data 
-sloopschepen = data_prep(df=sloopschepen,
+adult = data_prep(df=adult,
                    K=K,
                    predictors=predictors,
                    target_col=target_col)
@@ -409,12 +405,12 @@ def fair_random_forest_(best_frf_model_params):
     roc_auc_list_2d = np.array([])
     strong_dp_list_2d = np.array([])
     
-    y = sloopschepen["y"]
-    s = sloopschepen["X"][sensitive_col]
+    y = adult["y"]
+    s = adult["X"][sensitive_col]
     splitter_y = y.astype(str) + s.astype(str)
 
     # Looping over the folds
-    for trainset, testset in sloopschepen["folds"].split(sloopschepen["X"],splitter_y):
+    for trainset, testset in adult["folds"].split(adult["X"],splitter_y):
 
         roc_auc_list_1d = np.array([])
         strong_dp_list_1d = np.array([])
@@ -423,11 +419,11 @@ def fair_random_forest_(best_frf_model_params):
         global y_train_df
         
         # Splitting and preparing the data, targets and sensitive attributes
-        X_train_df = sloopschepen["X"][sloopschepen["X"].index.isin(trainset)]
-        y_train_df = sloopschepen["y"][sloopschepen["y"].index.isin(trainset)]
+        X_train_df = adult["X"][adult["X"].index.isin(trainset)]
+        y_train_df = adult["y"][adult["y"].index.isin(trainset)]
         
-        X_test_df = sloopschepen["X"][sloopschepen["X"].index.isin(testset)]
-        y_test_df = sloopschepen["y"][sloopschepen["y"].index.isin(testset)]
+        X_test_df = adult["X"][adult["X"].index.isin(testset)]
+        y_test_df = adult["y"][adult["y"].index.isin(testset)]
 
         s_train = pd.DataFrame(X_train_df[sensitive_col]).values.astype(int)
         s_test = X_test_df[sensitive_col]
@@ -471,26 +467,25 @@ def fair_random_forest_(best_frf_model_params):
     return np.mean(roc_auc_list_2d, axis=0), np.mean(strong_dp_list_2d, axis=0), np.std(roc_auc_list_2d, axis=0), np.std(strong_dp_list_2d, axis=0)
 
 
-
-y = sloopschepen["y"]
-s = sloopschepen["X"][sensitive_col]
+y = adult["y"]
+s = adult["X"][sensitive_col]
 splitter_y = y.astype(str) + s.astype(str)
 
 best_auc = 0.0
 best_frf_model_params = None
 
 # Looping over the folds
-for trainset, testset in sloopschepen["folds"].split(sloopschepen["X"],splitter_y):
+for trainset, testset in adult["folds"].split(adult["X"],splitter_y):
         
         global X_train_df
         global y_train_df
         
         # Splitting and preparing the data, targets and sensitive attributes
-        X_train_df = sloopschepen["X"][sloopschepen["X"].index.isin(trainset)]
-        y_train_df = sloopschepen["y"][sloopschepen["y"].index.isin(trainset)]
+        X_train_df = adult["X"][adult["X"].index.isin(trainset)]
+        y_train_df = adult["y"][adult["y"].index.isin(trainset)]
         
-        X_test_df = sloopschepen["X"][sloopschepen["X"].index.isin(testset)]
-        y_test_df = sloopschepen["y"][sloopschepen["y"].index.isin(testset)]
+        X_test_df = adult["X"][adult["X"].index.isin(testset)]
+        y_test_df = adult["y"][adult["y"].index.isin(testset)]
 
         params = {
             'theta': hp.choice('theta', [0.0]),
@@ -551,7 +546,6 @@ for trainset, testset in sloopschepen["folds"].split(sloopschepen["X"],splitter_
 auc_list, sdp_list, std_auc_list, std_sdp_list = fair_random_forest_(best_frf_model_params)
 
 
-
 ############################# Plot: AUC and SDP trade-off #############################
 
 plt.scatter(sdp_list, auc_list)
@@ -562,7 +556,7 @@ plt.ylabel("AUC")
 for i, txt in enumerate(theta_list):
     plt.annotate(round(txt,1), (sdp_list[i], auc_list[i]))
 
-plt.savefig('frf_hpo_once.pdf', bbox_inches='tight')
+plt.savefig('frf_hpo_once_adult.pdf', bbox_inches='tight')
 
 print("auc_frf =", auc_list.tolist())
 print("sdp_frf =", sdp_list.tolist())
@@ -576,4 +570,3 @@ print("std_sdp_frf =", std_sdp_list.tolist())
 # plt.title("AUC and SDP scores for different theta values when applying FRF")
 # plt.xlabel("Theta")
 # plt.legend()
-
