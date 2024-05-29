@@ -1,4 +1,4 @@
-############################# FAIR ADVERSARIAL LEARNING #############################
+############################# FAIR RANDOM FOREST #############################
 
 #!/usr/bin/env python
 # coding: utf-8
@@ -7,22 +7,22 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import tensorflow as tf
 import sys
 import copy
-import math
-from tqdm import tqdm
 
 # Sklearn
-from sklearn.model_selection import StratifiedKFold, ParameterGrid
+from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import RobustScaler, OneHotEncoder
 from sklearn.impute import SimpleImputer, MissingIndicator
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.metrics import roc_auc_score
 
-# AIF360
-from aif360.sklearn.inprocessing import AdversarialDebiasing
+# Fair Random Forest
+from fair_trees import FairRandomForestClassifier
+
+# HyperOpt
+from hyperopt import hp, fmin, tpe, Trials, STATUS_OK
 
 # Path
 sys.path.append('../')
@@ -32,9 +32,6 @@ pd.options.mode.chained_assignment = None
 
 from warnings import filterwarnings
 filterwarnings('ignore')
-
-# Disable eager execution for Adversarial Debiasing
-tf.compat.v1.disable_eager_execution()
 
 ############################# Data pre-processing and feature selection functions #############################
 
@@ -180,15 +177,19 @@ def data_prep(df, K, predictors, target_col):
 
 ############################# Parameters #############################
 
-K = 3 # K-fold CV
+K = 10 # K-fold CV
+
+hyperopt_evals = 100 # Max number of evaluations for HPO
 
 target_col = "beached" # Target
 
 sensitive_col = "country_current_flag" # Sensitive attribute
 
-random_state = 42 # Seed to be used for reproducibility
+random_state = 42 # Seed to be used for reproducibility 
 
-theta = 0.0 # Performance (0) - fairness (1)
+standard_threshold = 0.5 # Classification threshold
+
+thresholds = np.arange(0.05, 1.0, 0.05) # Thresholds for experiments
 
 # Define list of predictors to use
 predictors = [
@@ -283,27 +284,24 @@ def strong_demographic_parity_score(s, y_prob):
 
 ############################# HPO #############################
 
-
-def cross_val_score_custom(params, X, y, cv=K):
+def cross_val_score_custom(model, X, y, cv=10):
     '''
     Evaluate the ROC AUC score by cross-validation.
 
             Parameters:
-                    params (dict): The parameters for the AdversarialDebiasing model.
+                    model (FairRandomForestClassifier object): The model.
                     X (array-like): The training data.
                     y (array-like): The labels.
                     cv (int): Number of folds.
 
             Returns:
-                    auc_perf (float): The ROC AUC score of the predictions and the labels.
-                    auc_fair (float): The ROC AUC score of the predictions and the sensitive attribute.
+                    roc_auc (float): The ROC AUC score.
     '''
     
     # Create K-fold cross validation folds
     splitter = StratifiedKFold(n_splits=cv, shuffle=True, random_state=random_state)
     
-    auc_perf_list = []
-    auc_fair_list = []
+    auc_list = []
     
     s = X[sensitive_col]
     splitter_y = y.astype(str) + s.astype(str)
@@ -318,47 +316,47 @@ def cross_val_score_custom(params, X, y, cv=K):
         X_test = X[X.index.isin(testset)]
         y_test = y[y.index.isin(testset)]
         
-        s_train = X_train[sensitive_col]
-        s_test = X_test[sensitive_col].astype(int)
+        s_train = pd.DataFrame(X_train[sensitive_col]).values.astype(int)
         
         X_train = X_train.drop(columns=[sensitive_col])
         X_test = X_test.drop(columns=[sensitive_col])
         
-        X_train = pd.DataFrame(ct.fit_transform(X_train))
-        X_test = pd.DataFrame(ct.transform(X_test))
+        X_train = ct.fit_transform(X_train)
+        X_test = ct.transform(X_test)
 
         # Initializing and fitting the classifier
-        cv = AdversarialDebiasing(
-                  prot_attr=s_train,
-                  debias=True,
-                  random_state=random_state,
-                  adversary_loss_weight=params['adversary_loss_weight'],
-                  num_epochs=params['num_epochs'],
-                  batch_size=params['batch_size'],
-                  classifier_num_hidden_units=params['classifier_num_hidden_units']
-              )
-        cv.fit(X_train, y_train)
+        clf = copy.deepcopy(model)
+        clf.fit(X_train, y_train, s_train)
 
         # Final predictions
-        y_pred_probs = cv.predict_proba(X_test).T[1]
+        y_pred_probs = clf.predict_proba(X_test).T[1]
         y_true = y_test
-        
-        nan_inf_error_list = [math.isfinite(x) for x in y_pred_probs]
-        if 0.0 in nan_inf_error_list:
-            print("Error")
-            auc_perf_list.append(0.5)
-            auc_fair_list.append(0.5)
-        else:
-            auc_perf_list.append(roc_auc_score(y_true,y_pred_probs))
-            auc_fair_list.append(0.5 + abs(0.5 - roc_auc_score(s_test, y_pred_probs)))
+
+        auc_list.append(roc_auc_score(y_true,y_pred_probs))
 
 
     # Final results
-    auc_perf_list = np.array(auc_perf_list)
-    auc_perf = np.nanmean(auc_perf_list, axis=0)
-    auc_fair_list = np.array(auc_fair_list)
-    auc_fair = np.nanmean(auc_fair_list, axis=0)
-    return auc_perf, auc_fair
+    auc_list = np.array(auc_list)
+    roc_auc = np.nanmean(auc_list, axis=0)
+    return roc_auc
+
+def best_model(trials):
+    '''
+    Retrieve the best model.
+
+            Parameters:
+                    trials (Trials object): Trials object.
+
+            Returns:
+                    trained_model (FairRandomForestClassifier object): The best model.
+    '''
+    valid_trial_list = [trial for trial in trials
+                            if STATUS_OK == trial['result']['status']]
+    losses = [ float(trial['result']['loss']) for trial in valid_trial_list]
+    index_having_minumum_loss = np.argmin(losses)
+    best_trial_obj = valid_trial_list[index_having_minumum_loss]
+    trained_model = best_trial_obj['result']['trained_model']
+    return trained_model
 
 def objective(params):
     '''
@@ -368,26 +366,37 @@ def objective(params):
                     params (dict): The parameters to create the model.
 
             Returns:
-                    (float): The score.
+                    (dict): The loss, status and trained model.
     '''
-    roc_auc_y, roc_auc_s = cross_val_score_custom(
-      params,
+    model = FairRandomForestClassifier(
+      random_state=random_state,
+      theta=params['theta'],
+      n_bins=params['n_bins'],
+      max_depth=params['max_depth'],
+      bootstrap=params['bootstrap'],
+      n_estimators=params['n_estimators'],
+      min_samples_split=params['min_samples_split'],
+      min_samples_leaf=params['min_samples_leaf'],
+      max_features=params['max_features']
+    )
+    roc_auc = cross_val_score_custom(
+      model,
       X_train_df,
       y_train_df,
       cv=K
     )
-    goal = (1-theta) * roc_auc_y - theta * roc_auc_s
-    
-    return goal
+
+    return {'loss': -roc_auc, 'status': STATUS_OK, 'trained_model': model}
+
 
 ############################# Training the classifier, predictions and outcomes #############################
 
-def fair_adversarial_learning_(th):
+def fair_random_forest_(th):
     '''
     Computes the average and std of AUC and SDP over K folds.
 
             Parameters:
-                    th (float): The theta value for FAL.
+                    th (float): The theta value for FRF.
 
             Returns:
                     roc_auc (float): The average of the ROC AUC list.
@@ -408,52 +417,48 @@ def fair_adversarial_learning_(th):
         
         global X_train_df
         global y_train_df
-        global theta
-        theta = th
-
+        
         # Splitting and preparing the data, targets and sensitive attributes
         X_train_df = sloopschepen["X"][sloopschepen["X"].index.isin(trainset)]
         y_train_df = sloopschepen["y"][sloopschepen["y"].index.isin(trainset)]
+        
         X_test_df = sloopschepen["X"][sloopschepen["X"].index.isin(testset)]
         y_test_df = sloopschepen["y"][sloopschepen["y"].index.isin(testset)]
 
         params = {
-            'adversary_loss_weight': [0.01, 0.05, 0.1, 0.5],
-            'num_epochs': [10, 50, 200],
-            'batch_size': [64, 128, 256],
-            'classifier_num_hidden_units': [100, 200, 1000]
+            'theta': hp.choice('theta', [th]),
+            'n_bins': hp.choice('n_bins', [256]),
+            'bootstrap': hp.choice('bootstrap', [True]),
+            'max_depth': hp.uniformint('max_depth', 1, 20, q=1.0),
+            'max_features': hp.uniform("max_features", 0.05, 0.95),
+            'n_estimators': hp.uniformint('n_estimators', 100, 500, q=1.0),
+            'min_samples_leaf': hp.uniformint('min_samples_leaf', 1, 10, q=1.0),
+            'min_samples_split': hp.uniformint('min_samples_split', 2, 20, q=1.0),
         }
 
-        best_score = float('-inf')
-        best_grid = None
+        trials = Trials()
 
-        for g in tqdm(ParameterGrid(params)):
-            score_ = objective(g)
-            # Save if best
-            if score_ > best_score:
-                best_score = score_
-                best_grid = g
-        print("Completed a fold")
-    
-        s_train = X_train_df[sensitive_col]
+        opt = fmin(
+            fn=objective,
+            space=params,
+            algo=tpe.suggest,
+            max_evals=hyperopt_evals,
+            trials=trials
+        )
+
+        # Initializing and fitting the classifier
+        cv = best_model(trials)
+        
+        s_train = pd.DataFrame(X_train_df[sensitive_col]).values.astype(int)
         s_test = X_test_df[sensitive_col]
+        
         X_train_df = X_train_df.drop(columns=[sensitive_col])
         X_test_df = X_test_df.drop(columns=[sensitive_col])
         
         X_train_df = pd.DataFrame(ct.fit_transform(X_train_df))
         X_test_df = pd.DataFrame(ct.transform(X_test_df))
-
-        # Initializing and fitting the classifier
-        cv = AdversarialDebiasing(
-                  prot_attr=s_train,
-                  debias=True,
-                  random_state=random_state,
-                  adversary_loss_weight=best_grid['adversary_loss_weight'],
-                  num_epochs=best_grid['num_epochs'],
-                  batch_size=best_grid['batch_size'],
-                  classifier_num_hidden_units=best_grid['classifier_num_hidden_units']
-              )
-        cv.fit(X_train_df, y_train_df)
+        
+        cv.fit(X_train_df, y_train_df, s_train)
 
         # Final predictions
         y_pred_probs = cv.predict_proba(X_test_df).T[1]
@@ -461,7 +466,7 @@ def fair_adversarial_learning_(th):
 
         mean_roc_auc.append(roc_auc_score(y_true, y_pred_probs))
         mean_strong_dp.append(strong_demographic_parity_score(s_test, y_pred_probs))
-
+    
     return np.average(mean_roc_auc), np.average(mean_strong_dp), np.std(mean_roc_auc), np.std(mean_strong_dp)
 
 auc_list = []
@@ -472,7 +477,7 @@ std_sdp_list = []
 theta_list = np.arange(0.0, 1.1, 0.1)
 
 for th in theta_list:
-    roc_auc, strong_dp, std_auc, std_sdp = fair_adversarial_learning_(th)
+    roc_auc, strong_dp, std_auc, std_sdp = fair_random_forest_(th)
     auc_list.append(roc_auc)
     sdp_list.append(strong_dp)
     std_auc_list.append(std_auc)
@@ -481,25 +486,7 @@ for th in theta_list:
 
 ############################# Plot: AUC and SDP trade-off #############################
 
-plt.scatter(sdp_list, auc_list)
-plt.title("AUC and SDP scores obtained by optimizing for different theta values when applying FAL")
-plt.xlabel("Strong demographic parity")
-plt.ylabel("AUC")
-
-for i, txt in enumerate(theta_list):
-    plt.annotate(round(txt,1), (sdp_list[i], auc_list[i]))
-
-plt.savefig('fal_gridsearch.pdf', bbox_inches='tight')
-
-print("auc_fal =", auc_list)
-print("sdp_fal =", sdp_list)
-print("std_auc_fal =", std_auc_list)
-print("std_sdp_fal =", std_sdp_list)
-
-# plt.plot(theta_list, auc_list, label="AUC")
-# plt.fill_between(theta_list, [x - y for x, y in zip(auc_list, std_auc_list)], [x + y for x, y in zip(auc_list, std_auc_list)], alpha=0.2)
-# plt.plot(theta_list, sdp_list, label="SDP")
-# plt.fill_between(theta_list, [x - y for x, y in zip(sdp_list, std_sdp_list)], [x + y for x, y in zip(sdp_list, std_sdp_list)], alpha=0.2)
-# plt.title("AUC and SDP scores for different theta values when applying FAL")
-# plt.xlabel("Theta")
-# plt.legend()
+print("auc_frf_setD =", auc_list)
+print("sdp_frf_setD =", sdp_list)
+print("std_auc_frf_setD =", std_auc_list)
+print("std_sdp_frf_setD =", std_sdp_list)

@@ -563,26 +563,8 @@ auc_list, sdp_list, std_auc_list, std_sdp_list = fair_adversarial_learning_(best
 
 ############################# Plot: AUC and SDP trade-off #############################
 
-plt.scatter(sdp_list, auc_list)
-plt.title("AUC and SDP scores obtained by using different adversary loss weight values when applying FAL")
-plt.xlabel("Strong demographic parity")
-plt.ylabel("AUC")
-
-for i, txt in enumerate(theta_list):
-    plt.annotate(round(txt,2), (sdp_list[i], auc_list[i]))
-
-plt.savefig('fal_hpo_once_bank_marketing.pdf', bbox_inches='tight')
-
-print("auc_fal =", auc_list.tolist())
-print("sdp_fal =", sdp_list.tolist())
-print("std_auc_fal =", std_auc_list.tolist())
-print("std_sdp_fal =", std_sdp_list.tolist())
-
-# plt.plot(theta_list, auc_list, label="AUC")
-# plt.fill_between(theta_list, [x - y for x, y in zip(auc_list, std_auc_list)], [x + y for x, y in zip(auc_list, std_auc_list)], alpha=0.2)
-# plt.plot(theta_list, sdp_list, label="SDP")
-# plt.fill_between(theta_list, [x - y for x, y in zip(sdp_list, std_sdp_list)], [x + y for x, y in zip(sdp_list, std_sdp_list)], alpha=0.2)
-# plt.title("AUC and SDP scores for different theta values when applying FAL")
-# plt.xlabel("Theta")
-# plt.legend()
+print("auc_fal_setB_bank =", auc_list.tolist())
+print("sdp_fal_setB_bank =", sdp_list.tolist())
+print("std_auc_fal_setB_bank =", std_auc_list.tolist())
+print("std_sdp_fal_setB_bank =", std_sdp_list.tolist())
 

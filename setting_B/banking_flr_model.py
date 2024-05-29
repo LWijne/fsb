@@ -51,8 +51,8 @@ def read_data():
 
     datasets_url = "https://github.com/pereirabarataap/fair_tree_classifier/raw/main/datasets.pkl"    
     datasets = joblib.load(urllib.request.urlopen(datasets_url))
-    datasets = datasets['adult']
-    datasets = pd.concat([datasets["X"], datasets["y"].to_frame(), datasets["z"]["gender"].to_frame()], axis=1)
+    datasets = datasets['bank_marketing']
+    datasets = pd.concat([datasets["X"], datasets["y"].to_frame(), datasets["z"]["marital"].to_frame()], axis=1)
     return datasets
 
 class MissIndicator():
@@ -117,25 +117,27 @@ class Clamper():
         
         return transformed_X
 
-def data_pre_processing(adult):
+def data_pre_processing(bank_marketing):
     '''
     Missing value imputation and converting the sensitive attribute into a binary attribute.
 
             Parameters:
-                    adult (pandas.DataFrame): DataFrame containing the data.
+                    bank_marketing (pandas.DataFrame): DataFrame containing the data.
 
             Returns:
-                    adult (pandas.DataFrame): DataFrame containing the preprocessed data.
+                    bank_marketing (pandas.DataFrame): DataFrame containing the preprocessed data.
     '''
 
-    adult["gender"][adult["gender"] == "Male"] = 0 # Male
-    adult["gender"][adult["gender"] == "Female"] = 1 # Female
+    bank_marketing["marital"][bank_marketing["marital"] == "married"] = 1 # Married
+    bank_marketing["marital"][bank_marketing["marital"] == "non-married"] = 0 # Not married
         
     # Replace NaN's with 'missing' for string columns
     for x in cat_columns:
-        adult[x] = adult[x].fillna('missing') 
+        bank_marketing[x] = bank_marketing[x].fillna('missing') 
+        # Also replace values with "unknown" to missing
+        bank_marketing[x][bank_marketing[x].apply(str.lower).str.contains("unknown")] = 'missing'
 
-    return adult
+    return bank_marketing
 
 
 def data_prep(df, K, predictors, target_col):
@@ -175,9 +177,9 @@ K = 10 # K-fold CV
 
 hyperopt_evals = 100 # Max number of evaluations for HPO
 
-target_col = "income" # Target
+target_col = "y" # Target
 
-sensitive_col = "gender" # Sensitive attribute
+sensitive_col = "marital" # Sensitive attribute
 
 random_state = 42 # Seed to be used for reproducibility 
 
@@ -191,35 +193,43 @@ theta_list = np.arange(0.0, 1.1, 0.1) # Thetas for experiments
 
 # Define list of predictors to use
 predictors = [
-    "fnlwgt",
-    "education-num",
-    "capital-gain",
-    "capital-loss",
-    "hours-per-week",
-    "workclass",
-    "marital-status",
-    "occupation",
-    "relationship",
-    "native-country",
-    "gender"
+    "balance",
+    "day",
+    "duration",
+    "campaign",
+    "pdays",
+    "previous",
+    "job",
+    "education",
+    "default",
+    "housing",
+    "loan",
+    "contact",
+    "month",
+    "poutcome",
+    "marital"
 ]
 
 # Specify which predictors are numerical
 num_columns = [
-    "fnlwgt",
-    "education-num",
-    "capital-gain",
-    "capital-loss",
-    "hours-per-week"
+    "balance",
+    "day",
+    "duration",
+    "campaign",
+    "pdays",
+    "previous"
 ]
 
 # Specify which predictors are categorical and need to be one-hot-encoded
 cat_columns = [
-    "workclass",
-    "marital-status",
-    "occupation",
-    "relationship",
-    "native-country"
+    "job",
+    "education",
+    "default",
+    "housing",
+    "loan",
+    "contact",
+    "month",
+    "poutcome"
 ]
 
 num_transformer = Pipeline([
@@ -239,11 +249,11 @@ ct = ColumnTransformer([
     remainder='passthrough'
 )
 
-adult = read_data()
-adult = data_pre_processing(adult)
+bank_marketing = read_data()
+bank_marketing = data_pre_processing(bank_marketing)
 
 # Prepare the data 
-adult = data_prep(df=adult,
+bank_marketing = data_prep(df=bank_marketing,
                    K=K,
                    predictors=predictors,
                    target_col=target_col)
@@ -321,7 +331,7 @@ def cross_val_score_custom(model, X, y, cv=10):
         
         X_train = ct.fit_transform(X_train)
 
-        columns = list(ct.transformers_[0][1][2].get_feature_names_out())+list(ct.transformers_[1][1][1].get_feature_names_out())+['gender']
+        columns = list(ct.transformers_[0][1][2].get_feature_names_out())+list(ct.transformers_[1][1][1].get_feature_names_out())+['marital']
 
         X_train = pd.DataFrame(X_train, columns=columns)
         X_test = pd.DataFrame(ct.transform(X_test), columns=columns)
@@ -421,12 +431,12 @@ def fair_logistic_regression_(best_flr_model_params):
     roc_auc_list_2d = np.array([])
     strong_dp_list_2d = np.array([])
     
-    y = adult["y"]
-    s = adult["X"][sensitive_col]
+    y = bank_marketing["y"]
+    s = bank_marketing["X"][sensitive_col]
     splitter_y = y.astype(str) + s.astype(str)
 
     # Looping over the folds
-    for trainset, testset in adult["folds"].split(adult["X"],splitter_y):
+    for trainset, testset in bank_marketing["folds"].split(bank_marketing["X"],splitter_y):
 
         roc_auc_list_1d = np.array([])
         strong_dp_list_1d = np.array([])
@@ -435,16 +445,16 @@ def fair_logistic_regression_(best_flr_model_params):
         global y_train_df
 
         # Splitting and preparing the data, targets and sensitive attributes
-        X_train_df = adult["X"][adult["X"].index.isin(trainset)]
-        y_train_df = adult["y"][adult["y"].index.isin(trainset)]
-        X_test_df = adult["X"][adult["X"].index.isin(testset)]
-        y_test_df = adult["y"][adult["y"].index.isin(testset)]
+        X_train_df = bank_marketing["X"][bank_marketing["X"].index.isin(trainset)]
+        y_train_df = bank_marketing["y"][bank_marketing["y"].index.isin(trainset)]
+        X_test_df = bank_marketing["X"][bank_marketing["X"].index.isin(testset)]
+        y_test_df = bank_marketing["y"][bank_marketing["y"].index.isin(testset)]
         
         s_test = X_test_df[sensitive_col].astype(int)
         
         X_train_df = ct.fit_transform(X_train_df)
         
-        columns = list(ct.transformers_[0][1][2].get_feature_names_out())+list(ct.transformers_[1][1][1].get_feature_names_out())+['gender']
+        columns = list(ct.transformers_[0][1][2].get_feature_names_out())+list(ct.transformers_[1][1][1].get_feature_names_out())+['marital']
 
         X_train_df = pd.DataFrame(X_train_df, columns=columns)
         X_test_df = pd.DataFrame(ct.transform(X_test_df), columns=columns)
@@ -488,24 +498,24 @@ def fair_logistic_regression_(best_flr_model_params):
     
     return np.mean(roc_auc_list_2d, axis=0), np.mean(strong_dp_list_2d, axis=0), np.std(roc_auc_list_2d, axis=0), np.std(strong_dp_list_2d, axis=0)
 
-y = adult["y"]
-s = adult["X"][sensitive_col]
+y = bank_marketing["y"]
+s = bank_marketing["X"][sensitive_col]
 splitter_y = y.astype(str) + s.astype(str)
 
 best_auc = 0.0
 best_flr_model_params = None
 
 # Looping over the folds
-for trainset, testset in adult["folds"].split(adult["X"],splitter_y):
+for trainset, testset in bank_marketing["folds"].split(bank_marketing["X"],splitter_y):
     
     global X_train_df
     global y_train_df
 
     # Splitting and preparing the data, targets and sensitive attributes
-    X_train_df = adult["X"][adult["X"].index.isin(trainset)]
-    y_train_df = adult["y"][adult["y"].index.isin(trainset)]
-    X_test_df = adult["X"][adult["X"].index.isin(testset)]
-    y_test_df = adult["y"][adult["y"].index.isin(testset)]
+    X_train_df = bank_marketing["X"][bank_marketing["X"].index.isin(trainset)]
+    y_train_df = bank_marketing["y"][bank_marketing["y"].index.isin(trainset)]
+    X_test_df = bank_marketing["X"][bank_marketing["X"].index.isin(testset)]
+    y_test_df = bank_marketing["y"][bank_marketing["y"].index.isin(testset)]
     
     params = {
         'penalty': hp.choice('penalty', ["l1", "l2", "elasticnet", None]),
@@ -537,7 +547,7 @@ for trainset, testset in adult["folds"].split(adult["X"],splitter_y):
     
     X_train_df = ct.fit_transform(X_train_df)
     
-    columns = list(ct.transformers_[0][1][2].get_feature_names_out())+list(ct.transformers_[1][1][1].get_feature_names_out())+['gender']
+    columns = list(ct.transformers_[0][1][2].get_feature_names_out())+list(ct.transformers_[1][1][1].get_feature_names_out())+['marital']
 
     X_train_df = pd.DataFrame(X_train_df, columns=columns)
     X_test_df = pd.DataFrame(ct.transform(X_test_df), columns=columns)
@@ -577,26 +587,8 @@ auc_list, sdp_list, std_auc_list, std_sdp_list = fair_logistic_regression_(best_
 
 ############################# Plot: AUC and SDP trade-off #############################
 
-plt.scatter(sdp_list, auc_list)
-plt.title("AUC and SDP scores obtained by using different constraint weight values when applying FLR")
-plt.xlabel("Strong demographic parity")
-plt.ylabel("AUC")
-
-for i, txt in enumerate(theta_list):
-    plt.annotate(round(txt,1), (sdp_list[i], auc_list[i]))
-
-plt.savefig('flr_hpo_once_adult.pdf', bbox_inches='tight')
-
-print("auc_flr =", auc_list.tolist())
-print("sdp_flr =", sdp_list.tolist())
-print("std_auc_flr =", std_auc_list.tolist())
-print("std_sdp_flr =", std_sdp_list.tolist())
-
-# plt.plot(theta_list, auc_list, label="AUC")
-# plt.fill_between(theta_list, [x - y for x, y in zip(auc_list, std_auc_list)], [x + y for x, y in zip(auc_list, std_auc_list)], alpha=0.2)
-# plt.plot(theta_list, sdp_list, label="SDP")
-# plt.fill_between(theta_list, [x - y for x, y in zip(sdp_list, std_sdp_list)], [x + y for x, y in zip(sdp_list, std_sdp_list)], alpha=0.2)
-# plt.title("AUC and SDP scores for different theta values when applying FLR")
-# plt.xlabel("Theta")
-# plt.legend()
+print("auc_flr_setB_bank =", auc_list.tolist())
+print("sdp_flr_setB_bank =", sdp_list.tolist())
+print("std_auc_flr_setB_bank =", std_auc_list.tolist())
+print("std_sdp_flr_setB_bank =", std_sdp_list.tolist())
 

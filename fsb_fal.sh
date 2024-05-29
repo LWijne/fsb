@@ -1,5 +1,5 @@
 #!/bin/sh
-#SBATCH --partition=graceGPU
+#SBATCH --partition=graceALL
 #SBATCH --exclude=ethnode[22]
 #SBATCH --job-name=fsb_fal
 #SBATCH --output=../../../scratch/s2034697/slurm_output/%x_%j.out
@@ -7,7 +7,7 @@
 START=$SECONDS
 
 echo "[$SHELL] #### Starting script"
-python3 -m  banking_fal_model_no_hpo
+python3 -m  setting_A/fal_model
 echo "[$SHELL] ## Script finished"
 
 FINISH=$SECONDS

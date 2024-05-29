@@ -11,6 +11,8 @@ import tensorflow as tf
 import sys
 import copy
 import math
+import urllib.request
+import joblib
 
 # Sklearn
 from sklearn.model_selection import StratifiedKFold
@@ -48,18 +50,14 @@ def read_data():
 
 
             Returns:
-                    sloopschepen (pandas.DataFrame): DataFrame containing the relevant data.
+                    datasets (pandas.DataFrame): DataFrame containing the relevant data.
     '''
 
-    # Get the file
-    sb_file = "sloopschepen_2024-01-22.csv"
-    # Read
-    sloopschepen = pd.read_csv(sb_file).drop("Unnamed: 0",axis=1)
-    # Filter out active ships
-    sloopschepen = sloopschepen[sloopschepen.dismantled == 1]
-    # Get the relevant columns
-    sloopschepen = sloopschepen[predictors+[target_col]].reset_index(drop=True)
-    return sloopschepen
+    datasets_url = "https://github.com/pereirabarataap/fair_tree_classifier/raw/main/datasets.pkl"    
+    datasets = joblib.load(urllib.request.urlopen(datasets_url))
+    datasets = datasets['adult']
+    datasets = pd.concat([datasets["X"], datasets["y"].to_frame(), datasets["z"]["gender"].to_frame()], axis=1)
+    return datasets
 
 class MissIndicator():
     
@@ -123,30 +121,25 @@ class Clamper():
         
         return transformed_X
 
-def data_pre_processing(sloopschepen):
+def data_pre_processing(adult):
     '''
     Missing value imputation and converting the sensitive attribute into a binary attribute.
 
             Parameters:
-                    sloopschepen (pandas.DataFrame): DataFrame containing the data.
+                    adult (pandas.DataFrame): DataFrame containing the data.
 
             Returns:
-                    sloopschepen (pandas.DataFrame): DataFrame containing the preprocessed data.
+                    adult (pandas.DataFrame): DataFrame containing the preprocessed data.
     '''
 
-    EOL_FOC_list = ["KNA", "COM", "PLW", "TUV", "TGO", "TZA", "VCT", "SLE"]
-    for x in ["country_current_flag", "country_previous_flag"]:
-        sloopschepen[x][~sloopschepen[x].isin(EOL_FOC_list)] = 0 # non-FOC for ship-breaking
-        sloopschepen[x][sloopschepen[x].isin(EOL_FOC_list)] = 1 # FOC for ship-breaking acc to NGO SP
+    adult["gender"][adult["gender"] == "Male"] = 0 # Male
+    adult["gender"][adult["gender"] == "Female"] = 1 # Female
         
     # Replace NaN's with 'missing' for string columns
     for x in cat_columns:
-        sloopschepen[x] = sloopschepen[x].fillna('missing')
-        # Also replace values with "unknown" or similar to missing
-        sloopschepen[x][sloopschepen[x].apply(str.lower).str.contains("unknown|unspecified")] = 'missing'
-        sloopschepen[x][sloopschepen[x].apply(str.lower) == "unk"] = 'missing' 
+        adult[x] = adult[x].fillna('missing') 
 
-    return sloopschepen
+    return adult
 
 
 def data_prep(df, K, predictors, target_col):
@@ -182,15 +175,15 @@ def data_prep(df, K, predictors, target_col):
 
 ############################# Parameters #############################
 
-K = 3 # K-fold CV
+K = 10 # K-fold CV
 
-hyperopt_evals = 10 # Max number of evaluations for HPO
+hyperopt_evals = 100 # Max number of evaluations for HPO
 
-target_col = "beached" # Target
+target_col = "income" # Target
 
-sensitive_col = "country_current_flag" # Sensitive attribute
+sensitive_col = "gender" # Sensitive attribute
 
-random_state = 42 # Seed to be used for reproducibility
+random_state = 42 # Seed to be used for reproducibility 
 
 standard_threshold = 0.5 # Classification threshold
 
@@ -198,34 +191,39 @@ thresholds = np.arange(0.05, 1.0, 0.05) # Thresholds for experiments
 
 theta = 0.0 # Performance (0) - fairness (1)
 
+theta_list = np.arange(0.0, 1.1, 0.1) # Thetas for experiments
+
 # Define list of predictors to use
 predictors = [
-    "vessel_type",
-    "gross_tonnage",
-    "port_of_registry",
-    "country_current_flag",
-    "country_previous_flag",
-    "years_since_final_flag_swap",
-    "pop_current_flag",
-    "gdpcap_current_flag",
-    "speed",
-    "age_in_months"
+    "fnlwgt",
+    "education-num",
+    "capital-gain",
+    "capital-loss",
+    "hours-per-week",
+    "workclass",
+    "marital-status",
+    "occupation",
+    "relationship",
+    "native-country",
+    "gender"
 ]
 
 # Specify which predictors are numerical
 num_columns = [
-    "gross_tonnage",
-    "years_since_final_flag_swap",
-    "speed",
-    "age_in_months",
-    "pop_current_flag",
-    "gdpcap_current_flag"
+    "fnlwgt",
+    "education-num",
+    "capital-gain",
+    "capital-loss",
+    "hours-per-week"
 ]
 
 # Specify which predictors are categorical and need to be one-hot-encoded
 cat_columns = [
-    "vessel_type",
-    "port_of_registry"
+    "workclass",
+    "marital-status",
+    "occupation",
+    "relationship",
+    "native-country"
 ]
 
 num_transformer = Pipeline([
@@ -245,11 +243,11 @@ ct = ColumnTransformer([
     remainder='passthrough'
 )
 
-sloopschepen = read_data()
-sloopschepen = data_pre_processing(sloopschepen)
+adult = read_data()
+adult = data_pre_processing(adult)
 
 # Prepare the data 
-sloopschepen = data_prep(df=sloopschepen,
+adult = data_prep(df=adult,
                    K=K,
                    predictors=predictors,
                    target_col=target_col)
@@ -351,16 +349,14 @@ def cross_val_score_custom(params, X, y, cv=10):
         y_pred_probs = cv.predict_proba(X_test).T[1]
         y_true = y_test
         
-        # nan_inf_error_list = [math.isfinite(x) for x in y_pred_probs]
-        # if 0.0 in nan_inf_error_list:
-        #     print("Error")
-        #     auc_list.append(0.5)
-        #     sdp_list.append(0.5)
-        # else:
-        #     auc_list.append(roc_auc_score(y_true,y_pred_probs))
-        #     sdp_list.append(0.5 + abs(0.5 - roc_auc_score(s_test, y_pred_probs)))
-        auc_perf_list.append(roc_auc_score(y_true,y_pred_probs))
-        auc_fair_list.append(0.5 + abs(0.5 - roc_auc_score(s_test, y_pred_probs)))
+        nan_inf_error_list = [math.isfinite(x) for x in y_pred_probs]
+        if 0.0 in nan_inf_error_list:
+            print("Error")
+            auc_perf_list.append(0.5)
+            auc_fair_list.append(0.5)
+        else:
+            auc_perf_list.append(roc_auc_score(y_true,y_pred_probs))
+            auc_fair_list.append(0.5 + abs(0.5 - roc_auc_score(s_test, y_pred_probs)))
 
 
     # Final results
@@ -410,59 +406,41 @@ def objective(params):
 
 ############################# Training the classifier, predictions and outcomes #############################
 
-def fair_adversarial_learning_(th):
+def fair_adversarial_learning_(best_fal_model_params):
     '''
     Computes the average and std of AUC and SDP over K folds.
 
             Parameters:
-                    th (float): The theta value for FAL.
+                    best_fal_model_params (dict): The parameters of the best model.
 
             Returns:
-                    roc_auc (float): The average of the ROC AUC list.
-                    strong_dp (float): The average of the strong demographic parity list.
-                    std_auc (float): The standard deviation of the ROC AUC list.
-                    std_sdp (float): The standard deviation of the strong demographic parity list.
+                    roc_auc (np.array): The average of the ROC AUC list for each theta.
+                    strong_dp (np.array): The average of the strong demographic parity list for each theta.
+                    std_auc (np.array): The standard deviation of the ROC AUC list for each theta.
+                    std_sdp (np.array): The standard deviation of the strong demographic parity list for each theta.
     '''
 
-    mean_roc_auc = []
-    mean_strong_dp = []
+    roc_auc_list_2d = np.array([])
+    strong_dp_list_2d = np.array([])
     
-    y = sloopschepen["y"]
-    s = sloopschepen["X"][sensitive_col]
+    y = adult["y"]
+    s = adult["X"][sensitive_col]
     splitter_y = y.astype(str) + s.astype(str)
 
     # Looping over the folds
-    for trainset, testset in sloopschepen["folds"].split(sloopschepen["X"],splitter_y):
+    for trainset, testset in adult["folds"].split(adult["X"],splitter_y):
+
+        roc_auc_list_1d = np.array([])
+        strong_dp_list_1d = np.array([])
         
         global X_train_df
         global y_train_df
-        global theta
-        theta = th
 
         # Splitting and preparing the data, targets and sensitive attributes
-        X_train_df = sloopschepen["X"][sloopschepen["X"].index.isin(trainset)]
-        y_train_df = sloopschepen["y"][sloopschepen["y"].index.isin(trainset)]
-        X_test_df = sloopschepen["X"][sloopschepen["X"].index.isin(testset)]
-        y_test_df = sloopschepen["y"][sloopschepen["y"].index.isin(testset)]
-        
-        params = {
-            'adversary_loss_weight': hp.uniform('adversary_loss_weight', 0.0, 2.0),
-            'num_epochs': hp.uniformint('num_epochs', 5, 500, q=1.0),
-            'batch_size': hp.uniformint('batch_size', 8, 2048, q=1.0),
-            'classifier_num_hidden_units': hp.uniformint('classifier_num_hidden_units', 20, 2000, q=1.0)
-        }
-
-        trials = Trials()
-
-        opt = fmin(
-            fn=objective,
-            space=params,
-            algo=tpe.suggest,
-            max_evals=hyperopt_evals,
-            trials=trials
-        )
-
-        params_best_model = best_model(trials)
+        X_train_df = adult["X"][adult["X"].index.isin(trainset)]
+        y_train_df = adult["y"][adult["y"].index.isin(trainset)]
+        X_test_df = adult["X"][adult["X"].index.isin(testset)]
+        y_test_df = adult["y"][adult["y"].index.isin(testset)]
     
         s_train = X_train_df[sensitive_col]
         s_test = X_test_df[sensitive_col]
@@ -472,63 +450,111 @@ def fair_adversarial_learning_(th):
         X_train_df = pd.DataFrame(ct.fit_transform(X_train_df))
         X_test_df = pd.DataFrame(ct.transform(X_test_df))
 
-        # Initializing and fitting the classifier
-        cv = AdversarialDebiasing(
+        for th in theta_list:
+            # Initializing and fitting the classifier
+            
+            cv = AdversarialDebiasing(
                   prot_attr=s_train,
                   debias=True,
                   random_state=random_state,
-                  adversary_loss_weight=params_best_model['adversary_loss_weight'],
-                  num_epochs=params_best_model['num_epochs'],
-                  batch_size=params_best_model['batch_size'],
-                  classifier_num_hidden_units=params_best_model['classifier_num_hidden_units']
+                  adversary_loss_weight=th,
+                  num_epochs=best_fal_model_params['num_epochs'],
+                  batch_size=best_fal_model_params['batch_size'],
+                  classifier_num_hidden_units=best_fal_model_params['classifier_num_hidden_units']
               )
-        cv.fit(X_train_df, y_train_df)
 
-        # Final predictions
-        y_pred_probs = cv.predict_proba(X_test_df).T[1]
-        y_true = y_test_df
+            cv.fit(X_train_df, y_train_df)
 
-        mean_roc_auc.append(roc_auc_score(y_true, y_pred_probs))
-        mean_strong_dp.append(strong_demographic_parity_score(s_test, y_pred_probs))
+            # Final predictions
+            y_pred_probs = cv.predict_proba(X_test_df).T[1]
+            y_true = y_test_df
 
-    return np.average(mean_roc_auc), np.average(mean_strong_dp), np.std(mean_roc_auc), np.std(mean_strong_dp)
+            roc_auc_list_1d = np.append(roc_auc_list_1d, roc_auc_score(y_true, y_pred_probs))
+            strong_dp_list_1d = np.append(strong_dp_list_1d, strong_demographic_parity_score(s_test, y_pred_probs))
+        
+        roc_auc_list_2d = np.vstack([roc_auc_list_2d, roc_auc_list_1d]) if roc_auc_list_2d.size else roc_auc_list_1d
+        strong_dp_list_2d = np.vstack([strong_dp_list_2d, strong_dp_list_1d]) if strong_dp_list_2d.size else strong_dp_list_1d
+    
+        print("Completed a fold")
 
-auc_list = []
-sdp_list = []
-std_auc_list = []
-std_sdp_list = []
+    
+    return np.mean(roc_auc_list_2d, axis=0), np.mean(strong_dp_list_2d, axis=0), np.std(roc_auc_list_2d, axis=0), np.std(strong_dp_list_2d, axis=0)
 
-theta_list = np.arange(0.0, 1.1, 0.1)
 
-for th in theta_list:
-    roc_auc, strong_dp, std_auc, std_sdp = fair_adversarial_learning_(th)
-    auc_list.append(roc_auc)
-    sdp_list.append(strong_dp)
-    std_auc_list.append(std_auc)
-    std_sdp_list.append(std_sdp)
-    print(((th*10+1)/11)*100, "% complete")
+y = adult["y"]
+s = adult["X"][sensitive_col]
+splitter_y = y.astype(str) + s.astype(str)
+
+best_auc = 0.0
+best_fal_model_params = None
+
+# Looping over the folds
+for trainset, testset in adult["folds"].split(adult["X"],splitter_y):
+    
+    global X_train_df
+    global y_train_df
+
+    # Splitting and preparing the data, targets and sensitive attributes
+    X_train_df = adult["X"][adult["X"].index.isin(trainset)]
+    y_train_df = adult["y"][adult["y"].index.isin(trainset)]
+    X_test_df = adult["X"][adult["X"].index.isin(testset)]
+    y_test_df = adult["y"][adult["y"].index.isin(testset)]
+    
+    params = {
+        'adversary_loss_weight': hp.choice('adversary_loss_weight', [0.1]),
+        'num_epochs': hp.uniformint('num_epochs', 5, 500, q=1.0),
+        'batch_size': hp.uniformint('batch_size', 8, 2048, q=1.0),
+        'classifier_num_hidden_units': hp.uniformint('classifier_num_hidden_units', 20, 2000, q=1.0)
+    }
+
+    trials = Trials()
+
+    opt = fmin(
+        fn=objective,
+        space=params,
+        algo=tpe.suggest,
+        max_evals=hyperopt_evals,
+        trials=trials
+    )
+
+    model_params = best_model(trials)
+
+    s_train = X_train_df[sensitive_col]
+    s_test = X_test_df[sensitive_col]
+    X_train_df = X_train_df.drop(columns=[sensitive_col])
+    X_test_df = X_test_df.drop(columns=[sensitive_col])
+    
+    X_train_df = pd.DataFrame(ct.fit_transform(X_train_df))
+    X_test_df = pd.DataFrame(ct.transform(X_test_df))
+
+    cv = AdversarialDebiasing(
+        prot_attr=s_train,
+        debias=True,
+        random_state=random_state,
+        adversary_loss_weight=model_params['adversary_loss_weight'],
+        num_epochs=model_params['num_epochs'],
+        batch_size=model_params['batch_size'],
+        classifier_num_hidden_units=model_params['classifier_num_hidden_units']
+    )
+
+    cv.fit(X_train_df, y_train_df)
+
+    # Final predictions
+    y_pred_probs = cv.predict_proba(X_test_df).T[1]
+    y_true = y_test_df
+
+    roc_auc = roc_auc_score(y_true, y_pred_probs)
+    if roc_auc > best_auc:
+        best_auc = roc_auc
+        best_fal_model_params = model_params
+
+
+auc_list, sdp_list, std_auc_list, std_sdp_list = fair_adversarial_learning_(best_fal_model_params)
 
 ############################# Plot: AUC and SDP trade-off #############################
 
-plt.scatter(sdp_list, auc_list)
-plt.title("AUC and SDP scores obtained by optimizing for different theta values when applying FAL")
-plt.xlabel("Strong demographic parity")
-plt.ylabel("AUC")
+print("auc_fal_setB_adult =", auc_list.tolist())
+print("sdp_fal_setB_adult =", sdp_list.tolist())
+print("std_auc_fal_setB_adult =", std_auc_list.tolist())
+print("std_sdp_fal_setB_adult =", std_sdp_list.tolist())
 
-for i, txt in enumerate(theta_list):
-    plt.annotate(round(txt,1), (sdp_list[i], auc_list[i]))
-
-plt.savefig('fal.pdf', bbox_inches='tight')
-
-print("auc_fal =", auc_list)
-print("sdp_fal =", sdp_list)
-print("std_auc_fal =", std_auc_list)
-print("std_sdp_fal =", std_sdp_list)
-
-# plt.plot(theta_list, auc_list, label="AUC")
-# plt.fill_between(theta_list, [x - y for x, y in zip(auc_list, std_auc_list)], [x + y for x, y in zip(auc_list, std_auc_list)], alpha=0.2)
-# plt.plot(theta_list, sdp_list, label="SDP")
-# plt.fill_between(theta_list, [x - y for x, y in zip(sdp_list, std_sdp_list)], [x + y for x, y in zip(sdp_list, std_sdp_list)], alpha=0.2)
-# plt.title("AUC and SDP scores for different theta values when applying FAL")
-# plt.xlabel("Theta")
-# plt.legend()

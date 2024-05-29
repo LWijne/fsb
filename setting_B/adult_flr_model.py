@@ -9,6 +9,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import sys
 import copy
+import urllib.request
+import joblib
 
 # Sklearn
 from sklearn.model_selection import StratifiedKFold
@@ -44,18 +46,14 @@ def read_data():
 
 
             Returns:
-                    sloopschepen (pandas.DataFrame): DataFrame containing the relevant data.
+                    datasets (pandas.DataFrame): DataFrame containing the relevant data.
     '''
 
-    # Get the file
-    sb_file = "sloopschepen_2024-01-22.csv"
-    # Read
-    sloopschepen = pd.read_csv(sb_file).drop("Unnamed: 0",axis=1)
-    # Filter out active ships
-    sloopschepen = sloopschepen[sloopschepen.dismantled == 1]
-    # Get the relevant columns
-    sloopschepen = sloopschepen[predictors+[target_col]].reset_index(drop=True)
-    return sloopschepen
+    datasets_url = "https://github.com/pereirabarataap/fair_tree_classifier/raw/main/datasets.pkl"    
+    datasets = joblib.load(urllib.request.urlopen(datasets_url))
+    datasets = datasets['adult']
+    datasets = pd.concat([datasets["X"], datasets["y"].to_frame(), datasets["z"]["gender"].to_frame()], axis=1)
+    return datasets
 
 class MissIndicator():
     
@@ -119,30 +117,25 @@ class Clamper():
         
         return transformed_X
 
-def data_pre_processing(sloopschepen):
+def data_pre_processing(adult):
     '''
     Missing value imputation and converting the sensitive attribute into a binary attribute.
 
             Parameters:
-                    sloopschepen (pandas.DataFrame): DataFrame containing the data.
+                    adult (pandas.DataFrame): DataFrame containing the data.
 
             Returns:
-                    sloopschepen (pandas.DataFrame): DataFrame containing the preprocessed data.
+                    adult (pandas.DataFrame): DataFrame containing the preprocessed data.
     '''
 
-    EOL_FOC_list = ["KNA", "COM", "PLW", "TUV", "TGO", "TZA", "VCT", "SLE"]
-    for x in ["country_current_flag", "country_previous_flag"]:
-        sloopschepen[x][~sloopschepen[x].isin(EOL_FOC_list)] = 0 # non-FOC for ship-breaking
-        sloopschepen[x][sloopschepen[x].isin(EOL_FOC_list)] = 1 # FOC for ship-breaking acc to NGO SP
+    adult["gender"][adult["gender"] == "Male"] = 0 # Male
+    adult["gender"][adult["gender"] == "Female"] = 1 # Female
         
     # Replace NaN's with 'missing' for string columns
     for x in cat_columns:
-        sloopschepen[x] = sloopschepen[x].fillna('missing')
-        # Also replace values with "unknown" or similar to missing
-        sloopschepen[x][sloopschepen[x].apply(str.lower).str.contains("unknown|unspecified")] = 'missing'
-        sloopschepen[x][sloopschepen[x].apply(str.lower) == "unk"] = 'missing' 
+        adult[x] = adult[x].fillna('missing') 
 
-    return sloopschepen
+    return adult
 
 
 def data_prep(df, K, predictors, target_col):
@@ -180,13 +173,13 @@ def data_prep(df, K, predictors, target_col):
 
 K = 10 # K-fold CV
 
-hyperopt_evals = 200 # Max number of evaluations for HPO
+hyperopt_evals = 100 # Max number of evaluations for HPO
 
-target_col = "beached" # Target
+target_col = "income" # Target
 
-sensitive_col = "country_current_flag" # Sensitive attribute
+sensitive_col = "gender" # Sensitive attribute
 
-random_state = 42 # Seed to be used for reproducibility
+random_state = 42 # Seed to be used for reproducibility 
 
 standard_threshold = 0.5 # Classification threshold
 
@@ -194,34 +187,39 @@ thresholds = np.arange(0.05, 1.0, 0.05) # Thresholds for experiments
 
 theta = 0.0 # Performance (0) - fairness (1)
 
+theta_list = np.arange(0.0, 1.1, 0.1) # Thetas for experiments
+
 # Define list of predictors to use
 predictors = [
-    "vessel_type",
-    "gross_tonnage",
-    "port_of_registry",
-    "country_current_flag",
-    "country_previous_flag",
-    "years_since_final_flag_swap",
-    "pop_current_flag",
-    "gdpcap_current_flag",
-    "speed",
-    "age_in_months"
+    "fnlwgt",
+    "education-num",
+    "capital-gain",
+    "capital-loss",
+    "hours-per-week",
+    "workclass",
+    "marital-status",
+    "occupation",
+    "relationship",
+    "native-country",
+    "gender"
 ]
 
 # Specify which predictors are numerical
 num_columns = [
-    "gross_tonnage",
-    "years_since_final_flag_swap",
-    "speed",
-    "age_in_months",
-    "pop_current_flag",
-    "gdpcap_current_flag"
+    "fnlwgt",
+    "education-num",
+    "capital-gain",
+    "capital-loss",
+    "hours-per-week"
 ]
 
 # Specify which predictors are categorical and need to be one-hot-encoded
 cat_columns = [
-    "vessel_type",
-    "port_of_registry"
+    "workclass",
+    "marital-status",
+    "occupation",
+    "relationship",
+    "native-country"
 ]
 
 num_transformer = Pipeline([
@@ -241,11 +239,11 @@ ct = ColumnTransformer([
     remainder='passthrough'
 )
 
-sloopschepen = read_data()
-sloopschepen = data_pre_processing(sloopschepen)
+adult = read_data()
+adult = data_pre_processing(adult)
 
 # Prepare the data 
-sloopschepen = data_prep(df=sloopschepen,
+adult = data_prep(df=adult,
                    K=K,
                    predictors=predictors,
                    target_col=target_col)
@@ -323,7 +321,7 @@ def cross_val_score_custom(model, X, y, cv=10):
         
         X_train = ct.fit_transform(X_train)
 
-        columns = list(ct.transformers_[0][1][2].get_feature_names_out())+list(ct.transformers_[1][1][1].get_feature_names_out())+['country_current_flag', 'country_previous_flag']
+        columns = list(ct.transformers_[0][1][2].get_feature_names_out())+list(ct.transformers_[1][1][1].get_feature_names_out())+['gender']
 
         X_train = pd.DataFrame(X_train, columns=columns)
         X_test = pd.DataFrame(ct.transform(X_test), columns=columns)
@@ -355,7 +353,7 @@ def best_model(trials):
                     trials (Trials object): Trials object.
 
             Returns:
-                    trained_model (GridSearchReduction object): The best model.
+                    trained_model (dict): The best model parameters.
     '''
     valid_trial_list = [trial for trial in trials
                             if STATUS_OK == trial['result']['status']]
@@ -373,7 +371,7 @@ def objective(params):
                     params (dict): The parameters to create the model.
 
             Returns:
-                    (dict): The loss, status and trained model.
+                    (dict): The loss, status and trained model parameters.
     '''
     model = GridSearchReduction(
       prot_attr=sensitive_col,
@@ -401,129 +399,185 @@ def objective(params):
     )
     goal = (1-theta) * roc_auc_y - theta * roc_auc_s
     
-    return {'loss': -goal, 'status': STATUS_OK, 'trained_model': model}
+    return {'loss': -goal, 'status': STATUS_OK, 'trained_model': params}
 
 
 ############################# Training the classifier, predictions and outcomes #############################
 
-def fair_logistic_regression_(th):
+def fair_logistic_regression_(best_flr_model_params):
     '''
     Computes the average and std of AUC and SDP over K folds.
 
             Parameters:
-                    th (float): The theta value for FLR.
+                    best_flr_model_params (dict): The parameters of the best model.
 
             Returns:
-                    roc_auc (float): The average of the ROC AUC list.
-                    strong_dp (float): The average of the strong demographic parity list.
-                    std_auc (float): The standard deviation of the ROC AUC list.
-                    std_sdp (float): The standard deviation of the strong demographic parity list.
+                    roc_auc (np.array): The average of the ROC AUC list for each theta.
+                    strong_dp (np.array): The average of the strong demographic parity list for each theta.
+                    std_auc (np.array): The standard deviation of the ROC AUC list for each theta.
+                    std_sdp (np.array): The standard deviation of the strong demographic parity list for each theta.
     '''
 
-    mean_roc_auc = []
-    mean_strong_dp = []
+    roc_auc_list_2d = np.array([])
+    strong_dp_list_2d = np.array([])
     
-    y = sloopschepen["y"]
-    s = sloopschepen["X"][sensitive_col]
+    y = adult["y"]
+    s = adult["X"][sensitive_col]
     splitter_y = y.astype(str) + s.astype(str)
 
     # Looping over the folds
-    for trainset, testset in sloopschepen["folds"].split(sloopschepen["X"],splitter_y):
+    for trainset, testset in adult["folds"].split(adult["X"],splitter_y):
+
+        roc_auc_list_1d = np.array([])
+        strong_dp_list_1d = np.array([])
         
         global X_train_df
         global y_train_df
-        global theta
-        theta = th
 
         # Splitting and preparing the data, targets and sensitive attributes
-        X_train_df = sloopschepen["X"][sloopschepen["X"].index.isin(trainset)]
-        y_train_df = sloopschepen["y"][sloopschepen["y"].index.isin(trainset)]
-        X_test_df = sloopschepen["X"][sloopschepen["X"].index.isin(testset)]
-        y_test_df = sloopschepen["y"][sloopschepen["y"].index.isin(testset)]
-        
-        params = {
-            'penalty': hp.choice('penalty', ["l1", "l2", "elasticnet", None]),
-            'constraint_weight': hp.uniform('constraint_weight', 0.0, 1.0),
-            'grid_size': hp.uniformint('grid_size', 2, 50, q=1.0),
-            'grid_limit': hp.uniform('grid_limit', 0.4, 10.0),
-            'loss': hp.choice('loss', ["ZeroOne", "Square", "Absolute"]),
-            'tol': hp.uniform('tol', 0.00001, 0.001),
-            'C': hp.uniform('C', 0.01, 10.0),
-            'fit_intercept': hp.choice('fit_intercept', [True, False]),
-            'class_weight': hp.choice('class_weight', [None, 'balanced']),
-            'max_iter': hp.uniformint('max_iter', 10, 1000, q=1.0),
-            'l1_ratio': hp.uniform('l1_ratio', 0.0, 1.0)
-        }
-
-        trials = Trials()
-
-        opt = fmin(
-            fn=objective,
-            space=params,
-            algo=tpe.suggest,
-            max_evals=hyperopt_evals,
-            trials=trials
-        )
+        X_train_df = adult["X"][adult["X"].index.isin(trainset)]
+        y_train_df = adult["y"][adult["y"].index.isin(trainset)]
+        X_test_df = adult["X"][adult["X"].index.isin(testset)]
+        y_test_df = adult["y"][adult["y"].index.isin(testset)]
         
         s_test = X_test_df[sensitive_col].astype(int)
         
         X_train_df = ct.fit_transform(X_train_df)
         
-        columns = list(ct.transformers_[0][1][2].get_feature_names_out())+list(ct.transformers_[1][1][1].get_feature_names_out())+['country_current_flag', 'country_previous_flag']
+        columns = list(ct.transformers_[0][1][2].get_feature_names_out())+list(ct.transformers_[1][1][1].get_feature_names_out())+['gender']
 
         X_train_df = pd.DataFrame(X_train_df, columns=columns)
         X_test_df = pd.DataFrame(ct.transform(X_test_df), columns=columns)
 
-        # Initializing and fitting the classifier
-        cv = best_model(trials)
-        cv.fit(X_train_df, y_train_df)
+        for th in theta_list:
+            # Initializing and fitting the classifier
+            
+            cv = GridSearchReduction(
+            prot_attr=sensitive_col,
+            estimator=LogisticRegression(random_state=random_state, 
+                                        penalty=best_flr_model_params['penalty'], 
+                                        tol=best_flr_model_params['tol'], 
+                                        C=best_flr_model_params['C'], 
+                                        fit_intercept=best_flr_model_params['fit_intercept'], 
+                                        class_weight=best_flr_model_params['class_weight'], 
+                                        solver='saga', 
+                                        max_iter=best_flr_model_params['max_iter'], 
+                                        l1_ratio=best_flr_model_params['l1_ratio']),
+            constraints="DemographicParity",
+            constraint_weight=th,
+            grid_size=best_flr_model_params['grid_size'],
+            grid_limit=best_flr_model_params['grid_limit'],
+            drop_prot_attr=True,
+            loss=best_flr_model_params['loss']
+            )
 
-        # Final predictions
-        y_pred_probs = cv.predict_proba(X_test_df).T[1]
-        y_true = y_test_df
+            cv.fit(X_train_df, y_train_df)
 
-        mean_roc_auc.append(roc_auc_score(y_true, y_pred_probs))
-        mean_strong_dp.append(strong_demographic_parity_score(s_test, y_pred_probs))
+            # Final predictions
+            y_pred_probs = cv.predict_proba(X_test_df).T[1]
+            y_true = y_test_df
 
-    return np.average(mean_roc_auc), np.average(mean_strong_dp), np.std(mean_roc_auc), np.std(mean_strong_dp)
+            roc_auc_list_1d = np.append(roc_auc_list_1d, roc_auc_score(y_true, y_pred_probs))
+            strong_dp_list_1d = np.append(strong_dp_list_1d, strong_demographic_parity_score(s_test, y_pred_probs))
+        
+        roc_auc_list_2d = np.vstack([roc_auc_list_2d, roc_auc_list_1d]) if roc_auc_list_2d.size else roc_auc_list_1d
+        strong_dp_list_2d = np.vstack([strong_dp_list_2d, strong_dp_list_1d]) if strong_dp_list_2d.size else strong_dp_list_1d
+    
+        print("Completed a fold")
+
+    
+    return np.mean(roc_auc_list_2d, axis=0), np.mean(strong_dp_list_2d, axis=0), np.std(roc_auc_list_2d, axis=0), np.std(strong_dp_list_2d, axis=0)
+
+y = adult["y"]
+s = adult["X"][sensitive_col]
+splitter_y = y.astype(str) + s.astype(str)
+
+best_auc = 0.0
+best_flr_model_params = None
+
+# Looping over the folds
+for trainset, testset in adult["folds"].split(adult["X"],splitter_y):
+    
+    global X_train_df
+    global y_train_df
+
+    # Splitting and preparing the data, targets and sensitive attributes
+    X_train_df = adult["X"][adult["X"].index.isin(trainset)]
+    y_train_df = adult["y"][adult["y"].index.isin(trainset)]
+    X_test_df = adult["X"][adult["X"].index.isin(testset)]
+    y_test_df = adult["y"][adult["y"].index.isin(testset)]
+    
+    params = {
+        'penalty': hp.choice('penalty', ["l1", "l2", "elasticnet", None]),
+        'constraint_weight': hp.choice('constraint_weight', [0.0]),
+        'grid_size': hp.uniformint('grid_size', 2, 50, q=1.0),
+        'grid_limit': hp.uniform('grid_limit', 0.4, 10.0),
+        'loss': hp.choice('loss', ["ZeroOne", "Square", "Absolute"]),
+        'tol': hp.uniform('tol', 0.00001, 0.001),
+        'C': hp.uniform('C', 0.01, 10.0),
+        'fit_intercept': hp.choice('fit_intercept', [True, False]),
+        'class_weight': hp.choice('class_weight', [None, 'balanced']),
+        'max_iter': hp.uniformint('max_iter', 10, 1000, q=1.0),
+        'l1_ratio': hp.uniform('l1_ratio', 0.0, 1.0)
+    }
+
+    trials = Trials()
+
+    opt = fmin(
+        fn=objective,
+        space=params,
+        algo=tpe.suggest,
+        max_evals=hyperopt_evals,
+        trials=trials
+    )
+
+    model_params = best_model(trials)
+    
+    s_test = X_test_df[sensitive_col].astype(int)
+    
+    X_train_df = ct.fit_transform(X_train_df)
+    
+    columns = list(ct.transformers_[0][1][2].get_feature_names_out())+list(ct.transformers_[1][1][1].get_feature_names_out())+['gender']
+
+    X_train_df = pd.DataFrame(X_train_df, columns=columns)
+    X_test_df = pd.DataFrame(ct.transform(X_test_df), columns=columns)
+
+    cv = GridSearchReduction(
+    prot_attr=sensitive_col,
+    estimator=LogisticRegression(random_state=random_state, 
+                                penalty=model_params['penalty'], 
+                                tol=model_params['tol'], 
+                                C=model_params['C'], 
+                                fit_intercept=model_params['fit_intercept'], 
+                                class_weight=model_params['class_weight'], 
+                                solver='saga', 
+                                max_iter=model_params['max_iter'], 
+                                l1_ratio=model_params['l1_ratio']),
+    constraints="DemographicParity",
+    constraint_weight=model_params['constraint_weight'],
+    grid_size=model_params['grid_size'],
+    grid_limit=model_params['grid_limit'],
+    drop_prot_attr=True,
+    loss=model_params['loss']
+    )
+
+    cv.fit(X_train_df, y_train_df)
+
+    # Final predictions
+    y_pred_probs = cv.predict_proba(X_test_df).T[1]
+    y_true = y_test_df
+
+    roc_auc = roc_auc_score(y_true, y_pred_probs)
+    if roc_auc > best_auc:
+        best_auc = roc_auc
+        best_flr_model_params = model_params
 
 
-auc_list = []
-sdp_list = []
-std_auc_list = []
-std_sdp_list = []
-
-theta_list = np.arange(0.0, 1.1, 0.1)
-
-for th in theta_list:
-    roc_auc, strong_dp, std_auc, std_sdp = fair_logistic_regression_(th)
-    auc_list.append(roc_auc)
-    sdp_list.append(strong_dp)
-    std_auc_list.append(std_auc)
-    std_sdp_list.append(std_sdp)
-    print(((th*10+1)/11)*100, "% complete")
+auc_list, sdp_list, std_auc_list, std_sdp_list = fair_logistic_regression_(best_flr_model_params)
 
 ############################# Plot: AUC and SDP trade-off #############################
 
-plt.scatter(sdp_list, auc_list)
-plt.title("AUC and SDP scores obtained by optimizing for different theta values when applying FLR")
-plt.xlabel("Strong demographic parity")
-plt.ylabel("AUC")
-
-for i, txt in enumerate(theta_list):
-    plt.annotate(round(txt,1), (sdp_list[i], auc_list[i]))
-
-plt.savefig('flr.pdf', bbox_inches='tight')
-
-print("auc_flr =", auc_list)
-print("sdp_flr =", sdp_list)
-print("std_auc_flr =", std_auc_list)
-print("std_sdp_flr =", std_sdp_list)
-
-# plt.plot(theta_list, auc_list, label="AUC")
-# plt.fill_between(theta_list, [x - y for x, y in zip(auc_list, std_auc_list)], [x + y for x, y in zip(auc_list, std_auc_list)], alpha=0.2)
-# plt.plot(theta_list, sdp_list, label="SDP")
-# plt.fill_between(theta_list, [x - y for x, y in zip(sdp_list, std_sdp_list)], [x + y for x, y in zip(sdp_list, std_sdp_list)], alpha=0.2)
-# plt.title("AUC and SDP scores for different theta values when applying FLR")
-# plt.xlabel("Theta")
-# plt.legend()
+print("auc_flr_setB_adult =", auc_list.tolist())
+print("sdp_flr_setB_adult =", sdp_list.tolist())
+print("std_auc_flr_setB_adult =", std_auc_list.tolist())
+print("std_sdp_flr_setB_adult =", std_sdp_list.tolist())
