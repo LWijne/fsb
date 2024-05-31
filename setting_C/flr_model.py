@@ -1,4 +1,4 @@
-############################# FAIR ADVERSARIAL LEARNING #############################
+############################# FAIR LOGISTIC REGRESSION #############################
 
 #!/usr/bin/env python
 # coding: utf-8
@@ -7,10 +7,8 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import tensorflow as tf
 import sys
 import copy
-import math
 
 # Sklearn
 from sklearn.model_selection import StratifiedKFold
@@ -18,10 +16,11 @@ from sklearn.preprocessing import RobustScaler, OneHotEncoder
 from sklearn.impute import SimpleImputer, MissingIndicator
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 
 # AIF360
-from aif360.sklearn.inprocessing import AdversarialDebiasing
+from aif360.sklearn.inprocessing.grid_search_reduction import GridSearchReduction
 
 # HyperOpt
 from hyperopt import hp, fmin, tpe, Trials, STATUS_OK
@@ -34,9 +33,6 @@ pd.options.mode.chained_assignment = None
 
 from warnings import filterwarnings
 filterwarnings('ignore')
-
-# Disable eager execution for Adversarial Debiasing
-tf.compat.v1.disable_eager_execution()
 
 ############################# Data pre-processing and feature selection functions #############################
 
@@ -198,6 +194,8 @@ thresholds = np.arange(0.05, 1.0, 0.05) # Thresholds for experiments
 
 theta = 0.0 # Performance (0) - fairness (1)
 
+theta_list = np.arange(0.0, 1.1, 0.1) # Thetas for experiments
+
 # Define list of predictors to use
 predictors = [
     "vessel_type",
@@ -291,13 +289,12 @@ def strong_demographic_parity_score(s, y_prob):
 
 ############################# HPO #############################
 
-
-def cross_val_score_custom(params, X, y, cv=10):
+def cross_val_score_custom(model, X, y, cv=10):
     '''
     Evaluate the ROC AUC score by cross-validation.
 
             Parameters:
-                    params (dict): The parameters for the AdversarialDebiasing model.
+                    model (GridSearchReduction object): The model.
                     X (array-like): The training data.
                     y (array-like): The labels.
                     cv (int): Number of folds.
@@ -312,7 +309,7 @@ def cross_val_score_custom(params, X, y, cv=10):
     
     auc_perf_list = []
     auc_fair_list = []
-    
+
     s = X[sensitive_col]
     splitter_y = y.astype(str) + s.astype(str)
 
@@ -322,43 +319,27 @@ def cross_val_score_custom(params, X, y, cv=10):
         # Splitting and reparing the data, targets and sensitive attributes
         X_train = X[X.index.isin(trainset)]
         y_train = y[y.index.isin(trainset)]
-        
         X_test = X[X.index.isin(testset)]
         y_test = y[y.index.isin(testset)]
-        
-        s_train = X_train[sensitive_col]
         s_test = X_test[sensitive_col].astype(int)
         
-        X_train = X_train.drop(columns=[sensitive_col])
-        X_test = X_test.drop(columns=[sensitive_col])
-        
-        X_train = pd.DataFrame(ct.fit_transform(X_train))
-        X_test = pd.DataFrame(ct.transform(X_test))
+        X_train = ct.fit_transform(X_train)
+
+        columns = list(ct.transformers_[0][1][2].get_feature_names_out())+list(ct.transformers_[1][1][1].get_feature_names_out())+['country_current_flag', 'country_previous_flag']
+
+        X_train = pd.DataFrame(X_train, columns=columns)
+        X_test = pd.DataFrame(ct.transform(X_test), columns=columns)
 
         # Initializing and fitting the classifier
-        cv = AdversarialDebiasing(
-                  prot_attr=s_train,
-                  debias=True,
-                  random_state=random_state,
-                  adversary_loss_weight=params['adversary_loss_weight'],
-                  num_epochs=params['num_epochs'],
-                  batch_size=params['batch_size'],
-                  classifier_num_hidden_units=params['classifier_num_hidden_units']
-              )
+        cv = model
         cv.fit(X_train, y_train)
 
         # Final predictions
         y_pred_probs = cv.predict_proba(X_test).T[1]
         y_true = y_test
-        
-        nan_inf_error_list = [math.isfinite(x) for x in y_pred_probs]
-        if 0.0 in nan_inf_error_list:
-            print("Error")
-            auc_list.append(0.5)
-            sdp_list.append(0.5)
-        else:
-            auc_list.append(roc_auc_score(y_true,y_pred_probs))
-            sdp_list.append(0.5 + abs(0.5 - roc_auc_score(s_test, y_pred_probs)))
+
+        auc_perf_list.append(roc_auc_score(y_true,y_pred_probs))
+        auc_fair_list.append(0.5 + abs(0.5 - roc_auc_score(s_test, y_pred_probs)))
 
 
     # Final results
@@ -376,7 +357,7 @@ def best_model(trials):
                     trials (Trials object): Trials object.
 
             Returns:
-                    trained_model (dict): The parameters for the best model.
+                    trained_model (dict): The best model parameters.
     '''
     valid_trial_list = [trial for trial in trials
                             if STATUS_OK == trial['result']['status']]
@@ -394,36 +375,55 @@ def objective(params):
                     params (dict): The parameters to create the model.
 
             Returns:
-                    (dict): The loss, status and trained model.
+                    (dict): The loss, status and trained model parameters.
     '''
+    model = GridSearchReduction(
+      prot_attr=sensitive_col,
+      estimator=LogisticRegression(random_state=random_state, 
+                                   penalty=params['penalty'], 
+                                   tol=params['tol'], 
+                                   C=params['C'], 
+                                   fit_intercept=params['fit_intercept'], 
+                                   class_weight=params['class_weight'], 
+                                   solver='saga', 
+                                   max_iter=params['max_iter'], 
+                                   l1_ratio=params['l1_ratio']),
+      constraints="DemographicParity",
+      constraint_weight=params['constraint_weight'],
+      grid_size=params['grid_size'],
+      grid_limit=params['grid_limit'],
+      drop_prot_attr=True,
+      loss=params['loss']
+    )
     roc_auc_y, roc_auc_s = cross_val_score_custom(
-      params,
+      model,
       X_train_df,
       y_train_df,
-      cv=10
+      cv=K
     )
     goal = (1-theta) * roc_auc_y - theta * roc_auc_s
     
     return {'loss': -goal, 'status': STATUS_OK, 'trained_model': params}
 
+
 ############################# Training the classifier, predictions and outcomes #############################
 
-def fair_adversarial_learning_(th):
+def fair_logistic_regression_():
     '''
     Computes the average and std of AUC and SDP over K folds.
 
             Parameters:
-                    th (float): The theta value for FAL.
+
 
             Returns:
-                    roc_auc (float): The average of the ROC AUC list.
-                    strong_dp (float): The average of the strong demographic parity list.
-                    std_auc (float): The standard deviation of the ROC AUC list.
-                    std_sdp (float): The standard deviation of the strong demographic parity list.
+                    roc_auc (np.array): The average of the ROC AUC list for each theta.
+                    strong_dp (np.array): The average of the strong demographic parity list for each theta.
+                    std_auc (np.array): The standard deviation of the ROC AUC list for each theta.
+                    std_sdp (np.array): The standard deviation of the strong demographic parity list for each theta.
     '''
 
-    mean_roc_auc = []
-    mean_strong_dp = []
+    roc_auc_list_2d = np.array([])
+    strong_dp_list_2d = np.array([])
     
     y = sloopschepen["y"]
     s = sloopschepen["X"][sensitive_col]
@@ -431,23 +431,31 @@ def fair_adversarial_learning_(th):
 
     # Looping over the folds
     for trainset, testset in sloopschepen["folds"].split(sloopschepen["X"],splitter_y):
+
+        roc_auc_list_1d = np.array([])
+        strong_dp_list_1d = np.array([])
         
         global X_train_df
         global y_train_df
-        global theta
-        theta = th
 
         # Splitting and preparing the data, targets and sensitive attributes
         X_train_df = sloopschepen["X"][sloopschepen["X"].index.isin(trainset)]
         y_train_df = sloopschepen["y"][sloopschepen["y"].index.isin(trainset)]
         X_test_df = sloopschepen["X"][sloopschepen["X"].index.isin(testset)]
         y_test_df = sloopschepen["y"][sloopschepen["y"].index.isin(testset)]
-        
+
         params = {
-            'adversary_loss_weight': hp.uniform('adversary_loss_weight', 0.0, 2.0),
-            'num_epochs': hp.uniformint('num_epochs', 5, 500, q=1.0),
-            'batch_size': hp.uniformint('batch_size', 8, 2048, q=1.0),
-            'classifier_num_hidden_units': hp.uniformint('classifier_num_hidden_units', 20, 2000, q=1.0)
+            'penalty': hp.choice('penalty', ["l1", "l2", "elasticnet", None]),
+            'constraint_weight': hp.choice('constraint_weight', [0.0]),
+            'grid_size': hp.uniformint('grid_size', 2, 50, q=1.0),
+            'grid_limit': hp.uniform('grid_limit', 0.4, 10.0),
+            'loss': hp.choice('loss', ["ZeroOne", "Square", "Absolute"]),
+            'tol': hp.uniform('tol', 0.00001, 0.001),
+            'C': hp.uniform('C', 0.01, 10.0),
+            'fit_intercept': hp.choice('fit_intercept', [True, False]),
+            'class_weight': hp.choice('class_weight', [None, 'balanced']),
+            'max_iter': hp.uniformint('max_iter', 10, 1000, q=1.0),
+            'l1_ratio': hp.uniform('l1_ratio', 0.0, 1.0)
         }
 
         trials = Trials()
@@ -460,61 +468,60 @@ def fair_adversarial_learning_(th):
             trials=trials
         )
 
-        params_best_model = best_model(trials)
-    
-        s_train = X_train_df[sensitive_col]
-        s_test = X_test_df[sensitive_col]
-        X_train_df = X_train_df.drop(columns=[sensitive_col])
-        X_test_df = X_test_df.drop(columns=[sensitive_col])
+        model_params = best_model(trials)
         
-        X_train_df = pd.DataFrame(ct.fit_transform(X_train_df))
-        X_test_df = pd.DataFrame(ct.transform(X_test_df))
+        s_test = X_test_df[sensitive_col].astype(int)
+        
+        X_train_df = ct.fit_transform(X_train_df)
+        
+        columns = list(ct.transformers_[0][1][2].get_feature_names_out())+list(ct.transformers_[1][1][1].get_feature_names_out())+['country_current_flag', 'country_previous_flag']
 
-        # Initializing and fitting the classifier
-        cv = AdversarialDebiasing(
-                  prot_attr=s_train,
-                  debias=True,
-                  random_state=random_state,
-                  adversary_loss_weight=params_best_model['adversary_loss_weight'],
-                  num_epochs=params_best_model['num_epochs'],
-                  batch_size=params_best_model['batch_size'],
-                  classifier_num_hidden_units=params_best_model['classifier_num_hidden_units']
-              )
-        cv.fit(X_train_df, y_train_df)
+        X_train_df = pd.DataFrame(X_train_df, columns=columns)
+        X_test_df = pd.DataFrame(ct.transform(X_test_df), columns=columns)
 
-        # Final predictions
-        y_pred_probs = cv.predict_proba(X_test_df).T[1]
-        y_true = y_test_df
+        for th in theta_list:
+            # Initializing and fitting the classifier
+            
+            cv = GridSearchReduction(
+            prot_attr=sensitive_col,
+            estimator=LogisticRegression(random_state=random_state, 
+                                        penalty=model_params['penalty'], 
+                                        tol=model_params['tol'], 
+                                        C=model_params['C'], 
+                                        fit_intercept=model_params['fit_intercept'], 
+                                        class_weight=model_params['class_weight'], 
+                                        solver='saga', 
+                                        max_iter=model_params['max_iter'], 
+                                        l1_ratio=model_params['l1_ratio']),
+            constraints="DemographicParity",
+            constraint_weight=th,
+            grid_size=model_params['grid_size'],
+            grid_limit=model_params['grid_limit'],
+            drop_prot_attr=True,
+            loss=model_params['loss']
+            )
 
-        nan_inf_error_list = [math.isfinite(x) for x in y_pred_probs]
-        if 0.0 in nan_inf_error_list:
-            print("Error")
-            mean_roc_auc.append(0.5)
-            mean_strong_dp.append(0.5)
-        else:
-            mean_roc_auc.append(roc_auc_score(y_true, y_pred_probs))
-            mean_strong_dp.append(strong_demographic_parity_score(s_test, y_pred_probs))
+            cv.fit(X_train_df, y_train_df)
 
-    return np.average(mean_roc_auc), np.average(mean_strong_dp), np.std(mean_roc_auc), np.std(mean_strong_dp)
+            # Final predictions
+            y_pred_probs = cv.predict_proba(X_test_df).T[1]
+            y_true = y_test_df
 
-auc_list = []
-sdp_list = []
-std_auc_list = []
-std_sdp_list = []
+            roc_auc_list_1d = np.append(roc_auc_list_1d, roc_auc_score(y_true, y_pred_probs))
+            strong_dp_list_1d = np.append(strong_dp_list_1d, strong_demographic_parity_score(s_test, y_pred_probs))
+        
+        roc_auc_list_2d = np.vstack([roc_auc_list_2d, roc_auc_list_1d]) if roc_auc_list_2d.size else roc_auc_list_1d
+        strong_dp_list_2d = np.vstack([strong_dp_list_2d, strong_dp_list_1d]) if strong_dp_list_2d.size else strong_dp_list_1d
 
-theta_list = np.arange(0.0, 1.1, 0.1)
+    return np.mean(roc_auc_list_2d, axis=0), np.mean(strong_dp_list_2d, axis=0), np.std(roc_auc_list_2d, axis=0), np.std(strong_dp_list_2d, axis=0)
 
-for th in theta_list:
-    roc_auc, strong_dp, std_auc, std_sdp = fair_adversarial_learning_(th)
-    auc_list.append(roc_auc)
-    sdp_list.append(strong_dp)
-    std_auc_list.append(std_auc)
-    std_sdp_list.append(std_sdp)
-    print(((th*10+1)/11)*100, "% complete")
+
+auc_list, sdp_list, std_auc_list, std_sdp_list = fair_logistic_regression_()
 
 ############################# Plot: AUC and SDP trade-off #############################
 
-print("auc_fal_setD =", auc_list)
-print("sdp_fal_setD =", sdp_list)
-print("std_auc_fal_setD =", std_auc_list)
-print("std_sdp_fal_setD =", std_sdp_list)
+print("auc_flr_setC =", auc_list.tolist())
+print("sdp_flr_setC =", sdp_list.tolist())
+print("std_auc_flr_setC =", std_auc_list.tolist())
+print("std_sdp_flr_setC =", std_sdp_list.tolist())
+
