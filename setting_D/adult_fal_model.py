@@ -175,9 +175,9 @@ def data_prep(df, K, predictors, target_col):
 
 ############################# Parameters #############################
 
-K = 3 # K-fold CV
+K = 10 # K-fold CV
 
-hyperopt_evals = 1 # Max number of evaluations for HPO
+hyperopt_evals = 100 # Max number of evaluations for HPO
 
 target_col = "income" # Target
 
@@ -352,11 +352,11 @@ def cross_val_score_custom(params, X, y, cv=10):
         nan_inf_error_list = [math.isfinite(x) for x in y_pred_probs]
         if 0.0 in nan_inf_error_list:
             print("Error")
-            auc_list.append(0.5)
-            sdp_list.append(0.5)
+            auc_perf_list.append(0.5)
+            auc_fair_list.append(0.5)
         else:
-            auc_list.append(roc_auc_score(y_true,y_pred_probs))
-            sdp_list.append(0.5 + abs(0.5 - roc_auc_score(s_test, y_pred_probs)))
+            auc_perf_list.append(roc_auc_score(y_true,y_pred_probs))
+            auc_fair_list.append(0.5 + abs(0.5 - roc_auc_score(s_test, y_pred_probs)))
 
 
     # Final results
@@ -401,7 +401,6 @@ def objective(params):
       cv=10
     )
     goal = (1-theta) * roc_auc_y - theta * roc_auc_s
-    print(goal)
     
     return {'loss': -goal, 'status': STATUS_OK, 'trained_model': params}
 
@@ -485,14 +484,8 @@ def fair_adversarial_learning_(th):
         y_pred_probs = cv.predict_proba(X_test_df).T[1]
         y_true = y_test_df
 
-        nan_inf_error_list = [math.isfinite(x) for x in y_pred_probs]
-        if 0.0 in nan_inf_error_list:
-            print("Error")
-            auc_list.append(0.5)
-            sdp_list.append(0.5)
-        else:
-            auc_list.append(roc_auc_score(y_true,y_pred_probs))
-            sdp_list.append(0.5 + abs(0.5 - roc_auc_score(s_test, y_pred_probs)))
+        mean_roc_auc.append(roc_auc_score(y_true, y_pred_probs))
+        mean_strong_dp.append(strong_demographic_parity_score(s_test, y_pred_probs))
 
     return np.average(mean_roc_auc), np.average(mean_strong_dp), np.std(mean_roc_auc), np.std(mean_strong_dp)
 
