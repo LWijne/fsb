@@ -321,7 +321,7 @@ def cross_val_score_custom(model, X, y, cv=10):
         
         X_train = ct.fit_transform(X_train)
 
-        columns = list(ct.transformers_[0][1][2].get_feature_names_out())+list(ct.transformers_[1][1][1].get_feature_names_out())+['country_current_flag', 'country_previous_flag']
+        columns = list(ct.transformers_[0][1][2].get_feature_names_out())+list(ct.transformers_[1][1][1].get_feature_names_out())+['gender']
 
         X_train = pd.DataFrame(X_train, columns=columns)
         X_test = pd.DataFrame(ct.transform(X_test), columns=columns)
@@ -467,7 +467,7 @@ def fair_logistic_regression_(th):
         
         X_train_df = ct.fit_transform(X_train_df)
         
-        columns = list(ct.transformers_[0][1][2].get_feature_names_out())+list(ct.transformers_[1][1][1].get_feature_names_out())+['country_current_flag', 'country_previous_flag']
+        columns = list(ct.transformers_[0][1][2].get_feature_names_out())+list(ct.transformers_[1][1][1].get_feature_names_out())+['gender']
 
         X_train_df = pd.DataFrame(X_train_df, columns=columns)
         X_test_df = pd.DataFrame(ct.transform(X_test_df), columns=columns)

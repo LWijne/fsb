@@ -1,13 +1,13 @@
 #!/bin/sh
 #SBATCH --partition=graceALL
 #SBATCH --exclude=ethnode[22]
-#SBATCH --job-name=fsb_frf
+#SBATCH --job-name=fsb_frf_adult_D
 #SBATCH --output=../../../scratch/s2034697/slurm_output/%x_%j.out
 
 START=$SECONDS
 
 echo "[$SHELL] #### Starting script"
-python3 -m  setting_A/frf_model
+python3 setting_D/adult_frf_model.py
 echo "[$SHELL] ## Script finished"
 
 FINISH=$SECONDS
