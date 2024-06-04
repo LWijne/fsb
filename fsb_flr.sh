@@ -1,13 +1,13 @@
 #!/bin/sh
-#SBATCH --partition=graceALL
+#SBATCH --partition=graceGPU
 #SBATCH --exclude=ethnode[22]
-#SBATCH --job-name=fsb_flr_D
+#SBATCH --job-name=fsb_flr_adult_D
 #SBATCH --output=../../../scratch/s2034697/slurm_output/%x_%j.out
 
 START=$SECONDS
 
 echo "[$SHELL] #### Starting script"
-python3 setting_D/flr_model.py
+python3 setting_D/adult_flr_model.py
 echo "[$SHELL] ## Script finished"
 
 FINISH=$SECONDS
