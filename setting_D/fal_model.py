@@ -182,9 +182,9 @@ def data_prep(df, K, predictors, target_col):
 
 ############################# Parameters #############################
 
-K = 10 # K-fold CV
+K = 5 # K-fold CV
 
-hyperopt_evals = 100 # Max number of evaluations for HPO
+hyperopt_evals = 50 # Max number of evaluations for HPO
 
 target_col = "beached" # Target
 
@@ -444,10 +444,10 @@ def fair_adversarial_learning_(th):
         y_test_df = sloopschepen["y"][sloopschepen["y"].index.isin(testset)]
         
         params = {
-            'adversary_loss_weight': hp.uniform('adversary_loss_weight', 0.0, 2.0),
-            'num_epochs': hp.uniformint('num_epochs', 5, 500, q=1.0),
-            'batch_size': hp.uniformint('batch_size', 8, 2048, q=1.0),
-            'classifier_num_hidden_units': hp.uniformint('classifier_num_hidden_units', 20, 2000, q=1.0)
+            'adversary_loss_weight': hp.uniform('adversary_loss_weight', 0.0, 1.0),
+            'num_epochs': hp.uniformint('num_epochs', 50, 500, q=1.0),
+            'batch_size': hp.uniformint('batch_size', 16, 1024, q=1.0),
+            'classifier_num_hidden_units': hp.uniformint('classifier_num_hidden_units', 40, 1000, q=1.0)
         }
 
         trials = Trials()

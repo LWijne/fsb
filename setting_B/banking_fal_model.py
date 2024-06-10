@@ -177,9 +177,9 @@ def data_prep(df, K, predictors, target_col):
 
 ############################# Parameters #############################
 
-K = 10 # K-fold CV
+K = 5 # K-fold CV
 
-hyperopt_evals = 100 # Max number of evaluations for HPO
+hyperopt_evals = 50 # Max number of evaluations for HPO
 
 target_col = "y" # Target
 
@@ -512,9 +512,9 @@ for trainset, testset in bank_marketing["folds"].split(bank_marketing["X"],split
     
     params = {
         'adversary_loss_weight': hp.choice('adversary_loss_weight', [0.1]),
-        'num_epochs': hp.uniformint('num_epochs', 5, 500, q=1.0),
-        'batch_size': hp.uniformint('batch_size', 8, 2048, q=1.0),
-        'classifier_num_hidden_units': hp.uniformint('classifier_num_hidden_units', 20, 2000, q=1.0)
+        'num_epochs': hp.uniformint('num_epochs', 50, 500, q=1.0),
+        'batch_size': hp.uniformint('batch_size', 16, 1024, q=1.0),
+        'classifier_num_hidden_units': hp.uniformint('classifier_num_hidden_units', 40, 1000, q=1.0)
     }
 
     trials = Trials()

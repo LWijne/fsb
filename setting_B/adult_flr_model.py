@@ -171,9 +171,9 @@ def data_prep(df, K, predictors, target_col):
 
 ############################# Parameters #############################
 
-K = 10 # K-fold CV
+K = 5 # K-fold CV
 
-hyperopt_evals = 100 # Max number of evaluations for HPO
+hyperopt_evals = 50 # Max number of evaluations for HPO
 
 target_col = "income" # Target
 
@@ -378,18 +378,14 @@ def objective(params):
       estimator=LogisticRegression(random_state=random_state, 
                                    penalty=params['penalty'], 
                                    tol=params['tol'], 
-                                   C=params['C'], 
-                                   fit_intercept=params['fit_intercept'], 
-                                   class_weight=params['class_weight'], 
-                                   solver='saga', 
-                                   max_iter=params['max_iter'], 
+                                   C=params['C'],
+                                   solver='saga',
                                    l1_ratio=params['l1_ratio']),
       constraints="DemographicParity",
       constraint_weight=params['constraint_weight'],
       grid_size=params['grid_size'],
       grid_limit=params['grid_limit'],
-      drop_prot_attr=True,
-      loss=params['loss']
+      drop_prot_attr=True
     )
     roc_auc_y, roc_auc_s = cross_val_score_custom(
       model,
@@ -451,24 +447,20 @@ def fair_logistic_regression_(best_flr_model_params):
 
         for th in theta_list:
             # Initializing and fitting the classifier
-            
+
             cv = GridSearchReduction(
             prot_attr=sensitive_col,
             estimator=LogisticRegression(random_state=random_state, 
                                         penalty=best_flr_model_params['penalty'], 
                                         tol=best_flr_model_params['tol'], 
-                                        C=best_flr_model_params['C'], 
-                                        fit_intercept=best_flr_model_params['fit_intercept'], 
-                                        class_weight=best_flr_model_params['class_weight'], 
-                                        solver='saga', 
-                                        max_iter=best_flr_model_params['max_iter'], 
+                                        C=best_flr_model_params['C'],
+                                        solver='saga',
                                         l1_ratio=best_flr_model_params['l1_ratio']),
             constraints="DemographicParity",
             constraint_weight=th,
             grid_size=best_flr_model_params['grid_size'],
             grid_limit=best_flr_model_params['grid_limit'],
-            drop_prot_attr=True,
-            loss=best_flr_model_params['loss']
+            drop_prot_attr=True
             )
 
             cv.fit(X_train_df, y_train_df)
@@ -508,16 +500,12 @@ for trainset, testset in adult["folds"].split(adult["X"],splitter_y):
     y_test_df = adult["y"][adult["y"].index.isin(testset)]
     
     params = {
-        'penalty': hp.choice('penalty', ["l1", "l2", "elasticnet", None]),
+        'penalty': hp.choice('penalty', ["elasticnet"]),
         'constraint_weight': hp.choice('constraint_weight', [0.0]),
         'grid_size': hp.uniformint('grid_size', 2, 50, q=1.0),
         'grid_limit': hp.uniform('grid_limit', 0.4, 10.0),
-        'loss': hp.choice('loss', ["ZeroOne", "Square", "Absolute"]),
         'tol': hp.uniform('tol', 0.00001, 0.001),
         'C': hp.uniform('C', 0.01, 10.0),
-        'fit_intercept': hp.choice('fit_intercept', [True, False]),
-        'class_weight': hp.choice('class_weight', [None, 'balanced']),
-        'max_iter': hp.uniformint('max_iter', 10, 1000, q=1.0),
         'l1_ratio': hp.uniform('l1_ratio', 0.0, 1.0)
     }
 
@@ -543,22 +531,18 @@ for trainset, testset in adult["folds"].split(adult["X"],splitter_y):
     X_test_df = pd.DataFrame(ct.transform(X_test_df), columns=columns)
 
     cv = GridSearchReduction(
-    prot_attr=sensitive_col,
-    estimator=LogisticRegression(random_state=random_state, 
-                                penalty=model_params['penalty'], 
-                                tol=model_params['tol'], 
-                                C=model_params['C'], 
-                                fit_intercept=model_params['fit_intercept'], 
-                                class_weight=model_params['class_weight'], 
-                                solver='saga', 
-                                max_iter=model_params['max_iter'], 
-                                l1_ratio=model_params['l1_ratio']),
-    constraints="DemographicParity",
-    constraint_weight=model_params['constraint_weight'],
-    grid_size=model_params['grid_size'],
-    grid_limit=model_params['grid_limit'],
-    drop_prot_attr=True,
-    loss=model_params['loss']
+      prot_attr=sensitive_col,
+      estimator=LogisticRegression(random_state=random_state, 
+                                   penalty=model_params['penalty'], 
+                                   tol=model_params['tol'], 
+                                   C=model_params['C'],
+                                   solver='saga',
+                                   l1_ratio=model_params['l1_ratio']),
+      constraints="DemographicParity",
+      constraint_weight=model_params['constraint_weight'],
+      grid_size=model_params['grid_size'],
+      grid_limit=model_params['grid_limit'],
+      drop_prot_attr=True
     )
 
     cv.fit(X_train_df, y_train_df)
