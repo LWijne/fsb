@@ -1,7 +1,7 @@
 #!/bin/sh
-#SBATCH --partition=graceGPU
+#SBATCH --partition=graceCPU
 #SBATCH --exclude=ethnode[22]
-#SBATCH --job-name=fsb_fal_adult_D
+#SBATCH --job-name=falDadult
 #SBATCH --output=../../../scratch/s2034697/slurm_output/%x_%j.out
 
 START=$SECONDS

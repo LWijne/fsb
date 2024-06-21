@@ -1,3 +1,5 @@
+th = 0.0
+
 ############################# FAIR ADVERSARIAL LEARNING #############################
 
 #!/usr/bin/env python
@@ -177,7 +179,7 @@ def data_prep(df, K, predictors, target_col):
 
 K = 5 # K-fold CV
 
-hyperopt_evals = 100 # Max number of evaluations for HPO
+hyperopt_evals = 50 # Max number of evaluations for HPO
 
 target_col = "income" # Target
 
@@ -489,24 +491,12 @@ def fair_adversarial_learning_(th):
 
     return np.average(mean_roc_auc), np.average(mean_strong_dp), np.std(mean_roc_auc), np.std(mean_strong_dp)
 
-auc_list = []
-sdp_list = []
-std_auc_list = []
-std_sdp_list = []
 
-theta_list = np.arange(0.0, 1.1, 0.1)
-
-for th in theta_list:
-    roc_auc, strong_dp, std_auc, std_sdp = fair_adversarial_learning_(th)
-    auc_list.append(roc_auc)
-    sdp_list.append(strong_dp)
-    std_auc_list.append(std_auc)
-    std_sdp_list.append(std_sdp)
-    print(((th*10+1)/11)*100, "% complete")
+roc_auc, strong_dp, std_auc, std_sdp = fair_adversarial_learning_(th)
 
 ############################# Plot: AUC and SDP trade-off #############################
 
-print("auc_fal_setD_adult =", auc_list)
-print("sdp_fal_setD_adult =", sdp_list)
-print("std_auc_fal_setD_adult =", std_auc_list)
-print("std_sdp_fal_setD_adult =", std_sdp_list)
+print("auc_fal_setD_adult =", roc_auc, " for ", th)
+print("sdp_fal_setD_adult =", strong_dp, " for ", th)
+print("std_auc_fal_setD_adult =", std_auc, " for ", th)
+print("std_sdp_fal_setD_adult =", std_sdp, " for ", th)
