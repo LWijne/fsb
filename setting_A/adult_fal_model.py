@@ -172,7 +172,7 @@ def data_prep(df, K, predictors, target_col):
 
 ############################# Parameters #############################
 
-K = 10 # K-fold CV
+K = 5 # K-fold CV
 
 target_col = "income" # Target
 
@@ -186,7 +186,7 @@ thresholds = np.arange(0.05, 1.0, 0.05) # Thresholds for experiments
 
 theta = 0.0 # Performance (0) - fairness (1)
 
-theta_list = np.arange(0.0, 1.1, 0.1) # Thetas for experiments
+theta_list = np.array([0.1, 0.09, 0.08, 0.07, 0.06, 0.05, 0.04, 0.03, 0.02, 0.01, 0.0]) # Thetas for experiments
 
 # Define list of predictors to use
 predictors = [
