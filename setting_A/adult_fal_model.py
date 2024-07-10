@@ -172,7 +172,7 @@ def data_prep(df, K, predictors, target_col):
 
 ############################# Parameters #############################
 
-K = 5 # K-fold CV
+K = 10 # K-fold CV
 
 target_col = "income" # Target
 

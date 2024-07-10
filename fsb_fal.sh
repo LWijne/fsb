@@ -1,13 +1,13 @@
 #!/bin/sh
 #SBATCH --partition=graceCPU
 #SBATCH --exclude=ethnode[22]
-#SBATCH --job-name=falEadult
+#SBATCH --job-name=fsb_fal_adult_D
 #SBATCH --output=../../../scratch/s2034697/slurm_output/%x_%j.out
 
 START=$SECONDS
 
 echo "[$SHELL] #### Starting script"
-python3  setting_E/adult_fal_model.py
+python3  setting_D/adult_fal_model.py
 echo "[$SHELL] ## Script finished"
 
 FINISH=$SECONDS
