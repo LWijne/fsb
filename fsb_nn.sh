@@ -1,13 +1,13 @@
 #!/bin/sh
 #SBATCH --partition=graceALL
 #SBATCH --exclude=ethnode[22]
-#SBATCH --job-name=fsb_lr
+#SBATCH --job-name=fsb_nn_adult
 #SBATCH --output=../../../scratch/s2034697/slurm_output/%x_%j.out
 
 START=$SECONDS
 
 echo "[$SHELL] #### Starting script"
-python3 -m  logreg_model
+python3 traditional_models/adult_nn_model.py
 echo "[$SHELL] ## Script finished"
 
 FINISH=$SECONDS

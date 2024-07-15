@@ -1,4 +1,4 @@
-############################# FAIR ADVERSARIAL LEARNING #############################
+############################# LOGISTIC REGRESSION #############################
 
 #!/usr/bin/env python
 # coding: utf-8
@@ -7,10 +7,8 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import tensorflow as tf
 import sys
 import copy
-import math
 import urllib.request
 import joblib
 
@@ -20,10 +18,14 @@ from sklearn.preprocessing import RobustScaler, OneHotEncoder
 from sklearn.impute import SimpleImputer, MissingIndicator
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
-from sklearn.metrics import roc_auc_score
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_auc_score, f1_score
 
-# AIF360
-from aif360.sklearn.inprocessing import AdversarialDebiasing
+# Fairlearn
+from fairlearn.metrics import demographic_parity_ratio
+
+# HyperOpt
+from hyperopt import hp, fmin, tpe, Trials, STATUS_OK
 
 # Path
 sys.path.append('../')
@@ -33,9 +35,6 @@ pd.options.mode.chained_assignment = None
 
 from warnings import filterwarnings
 filterwarnings('ignore')
-
-# Disable eager execution for Adversarial Debiasing
-tf.compat.v1.disable_eager_execution()
 
 ############################# Data pre-processing and feature selection functions #############################
 
@@ -85,7 +84,7 @@ class Clamper():
         counts = value_counts.values.astype(int)
         count_p = counts / sum(counts)
         min_p_increase = 1/len(values)
-        index_to_keep = np.argmin(abs(count_p - min_p_increase))    
+        index_to_keep = np.argmin(abs(count_p - min_p_increase))
         values_to_keep = values[:index_to_keep]
 
         return values_to_keep
@@ -174,6 +173,8 @@ def data_prep(df, K, predictors, target_col):
 
 K = 10 # K-fold CV
 
+hyperopt_evals = 200 # Max number of evaluations for HPO
+
 target_col = "income" # Target
 
 sensitive_col = "gender" # Sensitive attribute
@@ -186,7 +187,7 @@ thresholds = np.arange(0.05, 1.0, 0.05) # Thresholds for experiments
 
 theta = 0.0 # Performance (0) - fairness (1)
 
-theta_list = np.array([0.1, 0.09, 0.08, 0.07, 0.06, 0.05, 0.04, 0.03, 0.02, 0.01, 0.0]) # Thetas for experiments
+theta_list = np.arange(0.0, 1.1, 0.1) # Thetas for experiments
 
 # Define list of predictors to use
 predictors = [
@@ -281,85 +282,210 @@ def strong_demographic_parity_score(s, y_prob):
     sdp = abs(2*s_auc-1)
     return sdp
 
-############################# Training the classifier, predictions and outcomes #############################
 
-def fair_adversarial_learning_():
+############################# HPO #############################
+
+def cross_val_score_custom(model, X, y, s, cv=10):
     '''
-    Computes the average and std of AUC and SDP over K folds.
+    Evaluate the ROC AUC score by cross-validation.
 
             Parameters:
-                    
+                    model (GridSearchReduction object): The model.
+                    X (array-like): The training data.
+                    y (array-like): The labels.
+                    s (array-like): The sensitive attribute.
+                    cv (int): Number of folds.
 
             Returns:
-                    roc_auc (np.array): The average of the ROC AUC list for each theta.
-                    strong_dp (np.array): The average of the strong demographic parity list for each theta.
-                    std_auc (np.array): The standard deviation of the ROC AUC list for each theta.
-                    std_sdp (np.array): The standard deviation of the strong demographic parity list for each theta.
+                    auc_perf (float): The ROC AUC score of the predictions and the labels.
+                    auc_fair (float): The ROC AUC score of the predictions and the sensitive attribute.
     '''
-
-    roc_auc_list_2d = np.array([])
-    strong_dp_list_2d = np.array([])
     
-    y = adult["y"]
-    s = adult["X"][sensitive_col]
+    # Create K-fold cross validation folds
+    splitter = StratifiedKFold(n_splits=cv, shuffle=True, random_state=random_state)
+    
+    auc_perf_list = []
+    auc_fair_list = []
+
     splitter_y = y.astype(str) + s.astype(str)
 
     # Looping over the folds
-    for trainset, testset in adult["folds"].split(adult["X"],splitter_y):
+    for trainset, testset in splitter.split(X,splitter_y):
 
-        roc_auc_list_1d = np.array([])
-        strong_dp_list_1d = np.array([])
+        # Splitting and reparing the data, targets and sensitive attributes
+        X_train_df = X[X.index.isin(trainset)]
+        y_train_df = y[y.index.isin(trainset)]
+        X_test_df = X[X.index.isin(testset)]
+        y_test_df = y[y.index.isin(testset)]
+        s_test = s[s.index.isin(testset)].astype(int)
         
-        global X_train_df
-        global y_train_df
 
-        # Splitting and preparing the data, targets and sensitive attributes
-        X_train_df = adult["X"][adult["X"].index.isin(trainset)]
-        y_train_df = adult["y"][adult["y"].index.isin(trainset)]
-        X_test_df = adult["X"][adult["X"].index.isin(testset)]
-        y_test_df = adult["y"][adult["y"].index.isin(testset)]
+        # Initializing and fitting the classifier
+        cv = model
+        cv.fit(X_train_df, y_train_df)
+
+        # Final predictions
+        y_pred_probs = cv.predict_proba(X_test_df).T[1]
+        y_true = y_test_df
+
+        auc_perf_list.append(roc_auc_score(y_true,y_pred_probs))
+        auc_fair_list.append(0.5 + abs(0.5 - roc_auc_score(s_test, y_pred_probs)))
+
+
+    # Final results
+    auc_perf_list = np.array(auc_perf_list)
+    auc_perf = np.nanmean(auc_perf_list, axis=0)
+    auc_fair_list = np.array(auc_fair_list)
+    auc_fair = np.nanmean(auc_fair_list, axis=0)
+    return auc_perf, auc_fair
+
+
+def best_model(trials):
+    '''
+    Retrieve the best model.
+
+            Parameters:
+                    trials (Trials object): Trials object.
+
+            Returns:
+                    trained_model (LogisticRegression object): The best model.
+    '''
+    valid_trial_list = [trial for trial in trials
+                            if STATUS_OK == trial['result']['status']]
+    losses = [ float(trial['result']['loss']) for trial in valid_trial_list]
+    index_having_minumum_loss = np.argmin(losses)
+    best_trial_obj = valid_trial_list[index_having_minumum_loss]
+    trained_model = best_trial_obj['result']['trained_model']
+    return trained_model
+
+
+def objective(params):
+    '''
+    Retrieve the loss for a model created by certain parameters.
+
+            Parameters:
+                    params (dict): The parameters to create the model.
+
+            Returns:
+                    (dict): The loss, status and trained model.
+    '''
+    model = LogisticRegression(
+      penalty=params['penalty'],
+      tol=params['tol'],
+      C=params['C'],
+      fit_intercept=params['fit_intercept'],
+      class_weight=params['class_weight'],
+      random_state=random_state,
+      solver='saga',
+      max_iter=params['max_iter'],
+      l1_ratio=params['l1_ratio']
+    )
+    pipeline = Pipeline([('column_transformer', ct), ('classifier', model)])
+    roc_auc_y, roc_auc_s = cross_val_score_custom(
+      pipeline,
+      X_train_df,
+      y_train_df,
+      s_train,
+      cv=K,
+    )
+    goal = (1-theta) * roc_auc_y - theta * roc_auc_s
+
+    return {'loss': -goal, 'status': STATUS_OK, 'trained_model': model}
+
+
+############################# Training the classifier, predictions and outcomes #############################
+
+auc_plot_list, f1_plot_list, dpr_plot_list, sdp_plot_list = [], [], [], []
+
+y = adult["y"]
+s = adult["X"][sensitive_col]
+splitter_y = y.astype(str) + s.astype(str)
+
+# Looping over the folds
+for trainset, testset in adult["folds"].split(adult["X"],splitter_y):
+
+    # Splitting and reparing the data, targets and sensitive attributes
+    X_train_df = adult["X"][adult["X"].index.isin(trainset)]
+    y_train_df = adult["y"][adult["y"].index.isin(trainset)]
+    X_test_df = adult["X"][adult["X"].index.isin(testset)]
+    y_test_df = adult["y"][adult["y"].index.isin(testset)]
+    s_train = X_train_df[sensitive_col]
+    s_test = X_test_df[sensitive_col]
+    X_train_df = X_train_df.drop(columns=[sensitive_col])
+    X_test_df = X_test_df.drop(columns=[sensitive_col])
     
-        s_train = X_train_df[sensitive_col]
-        s_test = X_test_df[sensitive_col]
-        X_train_df = X_train_df.drop(columns=[sensitive_col])
-        X_test_df = X_test_df.drop(columns=[sensitive_col])
-        
-        X_train_df = pd.DataFrame(ct.fit_transform(X_train_df))
-        X_test_df = pd.DataFrame(ct.transform(X_test_df))
+    params = {
+        'penalty': hp.choice('penalty', ["l1", "l2", "elasticnet", None]),
+        'tol': hp.uniform('tol', 0.00001, 0.001),
+        'C': hp.uniform('C', 0.01, 10.0),
+        'fit_intercept': hp.choice('fit_intercept', [True, False]),
+        'class_weight': hp.choice('class_weight', [None, 'balanced']),
+        'max_iter': hp.uniformint('max_iter', 10, 1000, q=1.0),
+        'l1_ratio': hp.uniform('l1_ratio', 0.0, 1.0)
+    }
 
-        for th in theta_list:
-            # Initializing and fitting the classifier
-            
-            cv = AdversarialDebiasing(
-                  prot_attr=s_train,
-                  debias=True,
-                  random_state=random_state,
-                  adversary_loss_weight=th
-              )
+    trials = Trials()
 
-            cv.fit(X_train_df, y_train_df)
-
-            # Final predictions
-            y_pred_probs = cv.predict_proba(X_test_df).T[1]
-            y_true = y_test_df
-
-            roc_auc_list_1d = np.append(roc_auc_list_1d, roc_auc_score(y_true, y_pred_probs))
-            strong_dp_list_1d = np.append(strong_dp_list_1d, strong_demographic_parity_score(s_test, y_pred_probs))
-        
-        roc_auc_list_2d = np.vstack([roc_auc_list_2d, roc_auc_list_1d]) if roc_auc_list_2d.size else roc_auc_list_1d
-        strong_dp_list_2d = np.vstack([strong_dp_list_2d, strong_dp_list_1d]) if strong_dp_list_2d.size else strong_dp_list_1d
+    opt = fmin(
+        fn=objective,
+        space=params,
+        algo=tpe.suggest,
+        max_evals=hyperopt_evals,
+        trials=trials
+    )
     
-        print("Completed a fold")
+    c_model = best_model(trials)
 
-    
-    return np.mean(roc_auc_list_2d, axis=0), np.mean(strong_dp_list_2d, axis=0), np.std(roc_auc_list_2d, axis=0), np.std(strong_dp_list_2d, axis=0)
+    # Initializing and fitting the classifier
+    cv = c_model
+    pipeline = Pipeline([('column_transformer', ct), ('classifier', cv)])
+    pipeline.fit(X_train_df, y_train_df)
+
+    # Final predictions
+    y_pred_probs = pipeline.predict_proba(X_test_df).T[1]
+    y_true = y_test_df
+
+    auc_plot, f1_plot, dpr_plot, eor_plot, sdp_plot = [], [], [], [], []
+
+    # Looping over the thresholds
+    for t in thresholds:
+        y_pred = [1 if pred>=t else 0 for pred in y_pred_probs] # Predictions for t
+
+        # Adding all scores for this fold, for this threshold
+        auc_plot.append(roc_auc_score(y_true,y_pred_probs))
+        f1_plot.append(f1_score(y_true,y_pred))
+        dpr_plot.append(demographic_parity_ratio(y_true=y_true, y_pred=y_pred, sensitive_features=s_test))
+        sdp_plot.append(strong_demographic_parity_score(s_test, y_pred_probs))
+
+    # Final results for this fold (list for all thresholds)
+    auc_plot_list.append(auc_plot)
+    f1_plot_list.append(f1_plot)
+    dpr_plot_list.append(dpr_plot)
+    sdp_plot_list.append(sdp_plot)
 
 
-auc_list, sdp_list, std_auc_list, std_sdp_list = fair_adversarial_learning_()
+# Final results
+auc_plot_list = np.array(auc_plot_list)
+auc_plot = np.nanmean(auc_plot_list, axis=0)
+auc_std = np.nanstd(auc_plot_list, axis=0)
 
-############################# Plot: AUC and SDP trade-off #############################
+f1_plot_list = np.array(f1_plot_list)
+f1_plot = np.nanmean(f1_plot_list, axis=0)
+f1_std = np.nanstd(f1_plot_list, axis=0)
 
-print("auc_fal_setA_adult =", auc_list.tolist())
-print("sdp_fal_setA_adult =", sdp_list.tolist())
-print("std_auc_fal_setA_adult =", std_auc_list.tolist())
-print("std_sdp_fal_setA_adult =", std_sdp_list.tolist())
+dpr_plot_list = np.array(dpr_plot_list)
+dpr_plot = np.nanmean(dpr_plot_list, axis=0)
+dpr_std = np.nanstd(dpr_plot_list, axis=0)
+
+sdp_plot_list = np.array(sdp_plot_list)
+sdp_plot = np.nanmean(sdp_plot_list, axis=0)
+sdp_std = np.nanstd(sdp_plot_list, axis=0)
+rev_sdp_plot = 1-sdp_plot
+
+############################# Plot: performance and fairness measures against thresholds #############################
+
+print("auc_lr_adult =", [auc_plot[0]])
+print("sdp_lr_adult =", [sdp_plot[0]])
+print("std_auc_lr_adult =", [auc_std[0]])
+print("std_sdp_lr_adult =", [sdp_std[0]])
+
