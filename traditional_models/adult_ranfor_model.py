@@ -247,13 +247,6 @@ adult = data_prep(df=adult,
                    predictors=predictors,
                    target_col=target_col)
 
-# Prepare the data 
-adult = data_prep(df=adult,
-                   K=K,
-                   predictors=predictors,
-                   target_col=target_col)
-
-
 def strong_demographic_parity_score(s, y_prob):
     '''
     Returns the strong demographic parity score.
