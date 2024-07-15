@@ -177,9 +177,9 @@ def data_prep(df, K, predictors, target_col):
 
 ############################# Parameters #############################
 
-K = 10 # K-fold CV
+K = 5 # K-fold CV
 
-hyperopt_evals = 200 # Max number of evaluations for HPO
+hyperopt_evals = 50 # Max number of evaluations for HPO
 
 target_col = "beached" # Target
 
